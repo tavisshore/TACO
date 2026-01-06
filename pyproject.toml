@@ -29,6 +29,8 @@ dependencies = [
     "scipy>=1.10.0",
     "matplotlib>=3.7.0",
     "gtsam>=4.2.0",
+    "networkx>=3.0",
+    "tqdm>=4.65.0",
 ]
 
 [project.optional-dependencies]
@@ -37,6 +39,15 @@ cvgl = [
     "torchvision>=0.15.0",
     "lightning>=2.0.0",
     "pillow>=10.0.0",
+]
+kitti = [
+    "pykitti>=0.3.1",
+    "pypose>=0.6.0",
+    "osmnx>=1.6.0",
+    "opencv-python>=4.8.0",
+    "geopy>=2.4.0",
+    "haversine>=2.8.0",
+    "requests>=2.31.0",
 ]
 dev = [
     "pytest>=8.0.0",
@@ -53,7 +64,7 @@ docs = [
     "sphinx-autodoc-typehints>=1.25.0",
 ]
 all = [
-    "taco[cvgl,dev,docs]",
+    "taco[cvgl,kitti,dev,docs]",
 ]
 
 [project.urls]
@@ -242,4 +253,40 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = "PIL.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "cv2.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pykitti.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pypose.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "osmnx.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "networkx.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "geopy.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "haversine.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "streetview.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "requests.*"
 ignore_missing_imports = true

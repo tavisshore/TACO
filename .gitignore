@@ -132,3 +132,13 @@ dmypy.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Data files
+*.pth 
+*.h5
+*.npy
+*.npz
+
+sat_cache/
+*.graphml
+**/*/log.txt

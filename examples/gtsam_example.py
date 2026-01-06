@@ -10,8 +10,8 @@ This example demonstrates:
 
 import numpy as np
 
-from taco.sensors.cvgl import CVGLMeasurement
 from taco.pose_graph import PoseGraph, create_noise_model_diagonal
+from taco.sensors.cvgl import CVGLMeasurement
 from taco.sensors.imu import IMUData, IMUIntegrator
 from taco.utils.conversions import numpy_pose_to_gtsam
 from taco.visualization import plot_gtsam_values, plot_pose_graph
