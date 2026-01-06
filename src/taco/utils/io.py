@@ -1,7 +1,6 @@
 """Input/Output utilities for data loading and saving."""
 
 from pathlib import Path
-from typing import List
 
 import numpy as np
 
@@ -9,7 +8,7 @@ from ..pose_graph import PoseGraph
 from ..sensors.imu import IMUData
 
 
-def load_imu_data(filepath: Path) -> List[IMUData]:
+def load_imu_data(filepath: Path) -> list[IMUData]:
     """Load IMU data from file.
 
     Expected CSV format:

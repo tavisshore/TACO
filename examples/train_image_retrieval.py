@@ -2,10 +2,11 @@
 
 from pathlib import Path
 
-from taco.sensors.cvgl import ImageRetrievalModel, TripletDataset
-from torch.utils.data import DataLoader
 import lightning as L
-from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from torch.utils.data import DataLoader
+
+from taco.sensors.cvgl import ImageRetrievalModel, TripletDataset
 
 
 def main():
@@ -96,7 +97,7 @@ def main():
     # Train
     trainer.fit(model, train_loader, val_loader)
 
-    print(f"\n✓ Training complete!")
+    print("\n✓ Training complete!")
     print(f"Best checkpoint: {checkpoint_callback.best_model_path}")
 
 

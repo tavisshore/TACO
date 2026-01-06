@@ -25,8 +25,8 @@ class PoseGraph:
         self.current_estimates = gtsam.Values()
         self._current_pose_id = 0
         self._pose_timestamps: Dict[int, float] = {}
-        self.nodes: Dict[int, "PoseNode"] = {}
-        self.edges: List["Edge"] = []
+        self.nodes: Dict[int, PoseNode] = {}
+        self.edges: List[Edge] = []
 
     def add_pose_estimate(
         self,
@@ -177,7 +177,7 @@ class PoseGraph:
         symbol = gtsam.symbol("x", pose_id)
         if self.current_estimates.exists(symbol):
             return self.current_estimates.atPose3(symbol)
-        elif self.initial_estimates.exists(symbol):
+        if self.initial_estimates.exists(symbol):
             return self.initial_estimates.atPose3(symbol)
         return None
 

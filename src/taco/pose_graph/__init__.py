@@ -15,14 +15,14 @@ from .node import (
 from .optimizer import GraphOptimizer
 
 __all__ = [
-    "PoseGraph",
-    "PoseNode",
     "Edge",
     "EdgeType",
     "GraphOptimizer",
+    "PoseGraph",
+    "PoseNode",
     "create_between_factor",
-    "create_prior_factor",
     "create_noise_model_diagonal",
     "create_noise_model_gaussian",
     "create_noise_model_isotropic",
+    "create_prior_factor",
 ]

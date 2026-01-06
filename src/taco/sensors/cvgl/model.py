@@ -5,10 +5,9 @@ from typing import Any, Optional, Tuple
 import lightning as L
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-import torchvision.models as models
-from torch import Tensor
+from torch import Tensor, nn
+from torchvision import models
 
 
 class ImageRetrievalModel(L.LightningModule):

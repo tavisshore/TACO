@@ -18,9 +18,9 @@ try:
         [
             "CVGLLocalizer",
             "CVGLMeasurement",
+            "ImageDatabaseDataset",
             "ImageRetrievalModel",
             "TripletDataset",
-            "ImageDatabaseDataset",
         ]
     )
 except ImportError:

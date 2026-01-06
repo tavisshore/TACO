@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Optional
 
 import lightning as L
-import torch
 from lightning.pytorch.callbacks import (
     EarlyStopping,
     LearningRateMonitor,
@@ -77,8 +76,8 @@ def train_retrieval_model(
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True if gpus else False,
-        persistent_workers=True if num_workers > 0 else False,
+        pin_memory=bool(gpus),
+        persistent_workers=num_workers > 0,
     )
 
     val_loader = DataLoader(
@@ -86,8 +85,8 @@ def train_retrieval_model(
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
-        pin_memory=True if gpus else False,
-        persistent_workers=True if num_workers > 0 else False,
+        pin_memory=bool(gpus),
+        persistent_workers=num_workers > 0,
     )
 
     # Create model

@@ -146,8 +146,23 @@ select = [
     "RUF",    # ruff-specific rules
 ]
 ignore = [
-    "E501",   # line too long (handled by black)
+    "E501",    # line too long (handled by black)
+    "N803",    # allow uppercase argument names (T for transform matrix)
+    "N806",    # allow uppercase variable names (T for transform, R for rotation)
+    "N812",    # allow lowercase imports as non-lowercase (L for Lightning, F for functional)
     "PLR0913", # too many arguments
+    "PLR0915", # too many statements
+    "PLR2004", # magic values (use sparingly, prefer constants when reasonable)
+    "SIM108",  # allow if-else blocks instead of ternary for clarity
+    "TID252",  # allow relative imports from parent modules
+    "RET504",  # allow assignment before return for clarity
+    "ARG001",  # unused function arguments (kept for API consistency)
+    "ARG002",  # unused method arguments (kept for API consistency)
+    "ERA001",  # allow commented code (useful for documentation)
+    "F401",    # allow unused imports in __init__ (re-exports)
+    "PTH",     # allow os.path and open() (not always necessary to use pathlib)
+    "UP006",   # allow List/Dict/Tuple in annotations (more explicit than list/dict/tuple)
+    "UP035",   # allow typing.List/Dict/Tuple imports (more explicit than built-in generics)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -155,6 +170,13 @@ ignore = [
     "S101",   # assert allowed in tests
     "ARG",    # unused arguments allowed in tests (fixtures)
     "PLR2004", # magic values allowed in tests
+]
+"examples/**/*.py" = [
+    "PLR0915", # too many statements allowed in examples
+    "PLR2004", # magic values allowed in examples
+]
+"docs/**/*.py" = [
+    "PTH",    # allow os.path in docs
 ]
 
 [tool.ruff.lint.isort]

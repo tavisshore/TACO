@@ -1,5 +1,5 @@
 """Visualization utilities for pose graphs and trajectories."""
 
-from .plotter import plot_trajectory, plot_pose_graph
+from .plotter import plot_pose_graph, plot_trajectory
 
-__all__ = ["plot_trajectory", "plot_pose_graph"]
+__all__ = ["plot_pose_graph", "plot_trajectory"]

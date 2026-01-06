@@ -3,7 +3,7 @@
 Implements IMU preintegration using GTSAM's built-in PreintegratedIMUMeasurements.
 """
 
-from typing import List
+from typing import Optional
 
 import gtsam
 import numpy as np
@@ -62,15 +62,17 @@ class IMUPreintegrator:
         self.pim: gtsam.PreintegratedImuMeasurements
         self._reset_pim()
 
-    def _reset_pim(self, bias: gtsam.imuBias.ConstantBias = gtsam.imuBias.ConstantBias()) -> None:
+    def _reset_pim(self, bias: Optional[gtsam.imuBias.ConstantBias] = None) -> None:
         """Reset the preintegrated measurements.
 
         Args:
             bias: Initial IMU bias.
         """
+        if bias is None:
+            bias = gtsam.imuBias.ConstantBias()
         self.pim = gtsam.PreintegratedImuMeasurements(self.params, bias)
 
-    def reset(self, bias: gtsam.imuBias.ConstantBias = gtsam.imuBias.ConstantBias()) -> None:
+    def reset(self, bias: Optional[gtsam.imuBias.ConstantBias] = None) -> None:
         """Reset preintegrated measurements.
 
         Args:
@@ -95,9 +97,9 @@ class IMUPreintegrator:
 
     def integrate_measurements(
         self,
-        imu_measurements: List[IMUData],
-        bias_accel: npt.NDArray[np.float64] = np.zeros(3),
-        bias_gyro: npt.NDArray[np.float64] = np.zeros(3),
+        imu_measurements: list[IMUData],
+        bias_accel: Optional[npt.NDArray[np.float64]] = None,
+        bias_gyro: Optional[npt.NDArray[np.float64]] = None,
     ) -> None:
         """Preintegrate a list of IMU measurements.
 
@@ -106,6 +108,12 @@ class IMUPreintegrator:
             bias_accel: Accelerometer bias to use.
             bias_gyro: Gyroscope bias to use.
         """
+        # Use default biases if not provided
+        if bias_accel is None:
+            bias_accel = np.zeros(3)
+        if bias_gyro is None:
+            bias_gyro = np.zeros(3)
+
         # Create bias object
         bias = gtsam.imuBias.ConstantBias(bias_accel, bias_gyro)
         self.reset(bias)

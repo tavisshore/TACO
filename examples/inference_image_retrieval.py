@@ -128,7 +128,7 @@ def main():
 
     # Query again
     results = query_image(model, query_path, loaded_embeddings, loaded_paths, top_k=5)
-    print(f"\nTop 5 matches (from loaded database):")
+    print("\nTop 5 matches (from loaded database):")
     for i, (path, similarity) in enumerate(results, 1):
         print(f"  {i}. {Path(path).name}: {similarity:.4f}")
 

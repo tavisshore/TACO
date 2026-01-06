@@ -1,12 +1,13 @@
 """IMU integration for odometry estimation using GTSAM."""
 
-from typing import List, Tuple
-
 import gtsam
 import numpy as np
 import numpy.typing as npt
 
 from .data import IMUData
+
+# Constant for rotation threshold
+_ROTATION_EPSILON = 1e-8
 
 
 class IMUIntegrator:
@@ -29,9 +30,9 @@ class IMUIntegrator:
 
     def integrate(
         self,
-        imu_measurements: List[IMUData],
+        imu_measurements: list[IMUData],
         initial_orientation: npt.NDArray[np.float64],
-    ) -> Tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """Integrate IMU measurements.
 
         Args:
@@ -53,7 +54,7 @@ class IMUIntegrator:
 
     def integrate_to_gtsam_pose(
         self,
-        imu_measurements: List[IMUData],
+        imu_measurements: list[IMUData],
         initial_pose: gtsam.Pose3,
     ) -> gtsam.Pose3:
         """Integrate IMU measurements and return GTSAM Pose3.
@@ -70,7 +71,7 @@ class IMUIntegrator:
         initial_t = initial_pose.translation()
 
         # Integrate
-        position, velocity, orientation = self.integrate(imu_measurements, initial_R)
+        position, _velocity, orientation = self.integrate(imu_measurements, initial_R)
 
         # Add initial position
         final_position = np.array([initial_t.x(), initial_t.y(), initial_t.z()]) + position
@@ -92,7 +93,7 @@ class IMUIntegrator:
         omega = imu.angular_velocity
         omega_norm = np.linalg.norm(omega)
 
-        if omega_norm > 1e-8:
+        if omega_norm > _ROTATION_EPSILON:
             # Rodrigues' rotation formula
             omega_skew = self._skew_symmetric(omega)
             R_delta = (

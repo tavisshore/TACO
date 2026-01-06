@@ -3,7 +3,6 @@
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
-import numpy as np
 import torch
 from PIL import Image
 from torch.utils.data import Dataset

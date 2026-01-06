@@ -1,14 +1,11 @@
 """Plotting functions for visualization with GTSAM support."""
 
-from typing import Dict, List, Optional
-
 import gtsam
 import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
 from ..pose_graph import PoseGraph
-from ..utils.conversions import gtsam_pose_to_numpy
 
 
 def plot_trajectory(
@@ -109,7 +106,7 @@ def plot_pose_graph(
 
 def plot_gtsam_values(
     values: gtsam.Values,
-    pose_keys: List[int],
+    pose_keys: list[int],
     title: str = "GTSAM Trajectory",
     show: bool = True,
 ) -> plt.Figure:

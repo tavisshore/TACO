@@ -61,7 +61,7 @@ class TestIMUIntegrator:
             IMUData.from_raw(0.2, 0.0, 0.0, -9.81, 0.0, 0.0, 0.0),
         ]
 
-        position, velocity, orientation = integrator.integrate(
+        _position, velocity, _orientation = integrator.integrate(
             measurements, initial_orientation=np.eye(3)
         )
 

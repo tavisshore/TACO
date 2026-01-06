@@ -9,13 +9,12 @@ This example demonstrates:
 """
 
 import numpy as np
-import gtsam
 
-from taco.pose_graph import PoseGraph, PoseNode, create_noise_model_diagonal
-from taco.sensors.imu import IMUData, IMUIntegrator, IMUPreintegrator
 from taco.localization.cvgl import CVGLMeasurement
+from taco.pose_graph import PoseGraph, create_noise_model_diagonal
+from taco.sensors.imu import IMUData, IMUIntegrator
 from taco.utils.conversions import numpy_pose_to_gtsam
-from taco.visualization import plot_pose_graph, plot_gtsam_values
+from taco.visualization import plot_gtsam_values, plot_pose_graph
 
 
 def main() -> None:
@@ -93,7 +92,7 @@ def main() -> None:
     print(f"7. Added CVGL localization factor to pose {pose_id_1}")
 
     # Print graph statistics
-    print(f"\n8. Graph statistics:")
+    print("\n8. Graph statistics:")
     print(f"   - Number of factors: {graph.size()}")
     print(f"   - Initial error: {graph.get_error():.4f}")
 

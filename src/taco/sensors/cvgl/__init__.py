@@ -15,9 +15,9 @@ try:
 
     __all__.extend(
         [
+            "ImageDatabaseDataset",
             "ImageRetrievalModel",
             "TripletDataset",
-            "ImageDatabaseDataset",
         ]
     )
 except ImportError:
