@@ -10,7 +10,7 @@ This example demonstrates:
 
 import numpy as np
 
-from taco.localization.cvgl import CVGLMeasurement
+from taco.sensors.cvgl import CVGLMeasurement
 from taco.pose_graph import PoseGraph, create_noise_model_diagonal
 from taco.sensors.imu import IMUData, IMUIntegrator
 from taco.utils.conversions import numpy_pose_to_gtsam
