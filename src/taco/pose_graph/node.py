@@ -41,15 +41,20 @@ class PoseNode:
         Returns:
             GTSAM Pose3 object.
         """
-        # Convert orientation to rotation matrix if needed
+        # Create GTSAM Rot3 from orientation
         if self.orientation.shape == (4,):
-            R = self._quaternion_to_rotation_matrix(self.orientation)
+            # Use GTSAM's quaternion constructor (w, x, y, z order)
+            w, x, y, z = self.orientation
+            rot = gtsam.Rot3.Quaternion(float(w), float(x), float(y), float(z))
         else:
-            R = self.orientation
+            # Ensure rotation matrix is contiguous and float64 for GTSAM
+            R = np.ascontiguousarray(self.orientation, dtype=np.float64)
+            rot = gtsam.Rot3(R)
 
-        # Create GTSAM Rot3 and Point3
-        rot = gtsam.Rot3(R)
-        point = gtsam.Point3(self.position[0], self.position[1], self.position[2])
+        # Create GTSAM Point3
+        point = gtsam.Point3(
+            float(self.position[0]), float(self.position[1]), float(self.position[2])
+        )
 
         return gtsam.Pose3(rot, point)
 
@@ -92,11 +97,14 @@ class PoseNode:
             3x3 rotation matrix.
         """
         w, x, y, z = q
-        return np.array([
-            [1 - 2 * (y**2 + z**2), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-            [2 * (x * y + w * z), 1 - 2 * (x**2 + z**2), 2 * (y * z - w * x)],
-            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x**2 + y**2)],
-        ])
+        return np.array(
+            [
+                [1 - 2 * (y**2 + z**2), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+                [2 * (x * y + w * z), 1 - 2 * (x**2 + z**2), 2 * (y * z - w * x)],
+                [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x**2 + y**2)],
+            ],
+            dtype=np.float64,
+        )
 
 
 def create_noise_model_diagonal(

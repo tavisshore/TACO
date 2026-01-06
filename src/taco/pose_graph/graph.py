@@ -1,10 +1,14 @@
 """Pose graph implementation using GTSAM."""
 
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import gtsam
 import numpy as np
 import numpy.typing as npt
+
+if TYPE_CHECKING:
+    from .edge import Edge
+    from .node import PoseNode
 
 
 class PoseGraph:
@@ -21,6 +25,8 @@ class PoseGraph:
         self.current_estimates = gtsam.Values()
         self._current_pose_id = 0
         self._pose_timestamps: Dict[int, float] = {}
+        self.nodes: Dict[int, "PoseNode"] = {}
+        self.edges: List["Edge"] = []
 
     def add_pose_estimate(
         self,
@@ -228,3 +234,59 @@ class PoseGraph:
             Number of factors.
         """
         return self.graph.size()
+
+    def add_node(self, node: "PoseNode") -> int:
+        """Add a node to the graph.
+
+        Args:
+            node: PoseNode to add.
+
+        Returns:
+            The assigned node ID.
+        """
+        node_id = self._current_pose_id
+        self._current_pose_id += 1
+        self.nodes[node_id] = node
+        self._pose_timestamps[node_id] = node.timestamp
+
+        return node_id
+
+    def get_node(self, node_id: int) -> Optional["PoseNode"]:
+        """Get a node by ID.
+
+        Args:
+            node_id: The node identifier.
+
+        Returns:
+            The PoseNode if it exists, None otherwise.
+        """
+        return self.nodes.get(node_id)
+
+    def add_edge(self, edge: "Edge") -> None:
+        """Add an edge to the graph.
+
+        Args:
+            edge: Edge to add.
+        """
+        self.edges.append(edge)
+
+    def build_gtsam_graph(self) -> None:
+        """Build the GTSAM factor graph from nodes and edges.
+
+        This converts all stored nodes and edges to GTSAM format.
+        Should be called before optimization.
+        """
+        # Clear existing GTSAM structures
+        self.graph = gtsam.NonlinearFactorGraph()
+        self.initial_estimates = gtsam.Values()
+
+        # Add all nodes to GTSAM
+        for node_id, node in self.nodes.items():
+            pose = node.to_gtsam_pose()
+            symbol = gtsam.symbol("x", node_id)
+            self.initial_estimates.insert(symbol, pose)
+
+        # Add all edges to GTSAM
+        for edge in self.edges:
+            factor = edge.to_gtsam_between_factor()
+            self.graph.add(factor)

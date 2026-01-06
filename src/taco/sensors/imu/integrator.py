@@ -102,8 +102,10 @@ class IMUIntegrator:
             )
             self.orientation = self.orientation @ R_delta
 
-        # Transform acceleration to world frame and integrate
-        accel_world = self.orientation @ imu.linear_acceleration + self.gravity
+        # Transform acceleration to world frame and remove gravity
+        # IMU measures specific force (includes gravity effect)
+        # To get true kinematic acceleration, subtract gravity
+        accel_world = self.orientation @ imu.linear_acceleration - self.gravity
         self.velocity += accel_world * dt
         self.position += self.velocity * dt + 0.5 * accel_world * dt**2
 
