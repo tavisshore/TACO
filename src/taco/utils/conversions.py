@@ -17,11 +17,13 @@ def quaternion_to_rotation_matrix(q: npt.NDArray[np.float64]) -> npt.NDArray[np.
     q = q / np.linalg.norm(q)  # Normalize
     w, x, y, z = q
 
-    return np.array([
-        [1 - 2 * (y**2 + z**2), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-        [2 * (x * y + w * z), 1 - 2 * (x**2 + z**2), 2 * (y * z - w * x)],
-        [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x**2 + y**2)],
-    ])
+    return np.array(
+        [
+            [1 - 2 * (y**2 + z**2), 2 * (x * y - w * z), 2 * (x * z + w * y)],
+            [2 * (x * y + w * z), 1 - 2 * (x**2 + z**2), 2 * (y * z - w * x)],
+            [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x**2 + y**2)],
+        ]
+    )
 
 
 def rotation_matrix_to_quaternion(R: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:

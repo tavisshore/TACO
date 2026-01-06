@@ -2,8 +2,8 @@
 
 [![CI](https://github.com/tavisshore/taco/workflows/CI/badge.svg)](https://github.com/tavisshore/taco/actions)
 [![codecov](https://codecov.io/gh/tavisshore/taco/branch/main/graph/badge.svg)](https://codecov.io/gh/tavisshore/taco)
-[![PyPI version](https://badge.fury.io/py/taco.svg)](https://badge.fury.io/py/taco)
-[![Python versions](https://img.shields.io/pypi/pyversions/taco.svg)](https://pypi.org/project/taco/)
+<!-- [![PyPI version](https://badge.fury.io/py/taco.svg)](https://badge.fury.io/py/taco) -->
+<!-- [![Python versions](https://img.shields.io/pypi/pyversions/taco.svg)](https://pypi.org/project/taco/) -->
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **TACO** is a Python library for pose graph optimization that fuses **IMU (Inertial Measurement Unit)** data with **CVGL (Computer Vision Global Localization)** image-based measurements for robust 6-DOF pose estimation.

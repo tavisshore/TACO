@@ -189,9 +189,7 @@ class PoseGraph:
         """
         poses = {}
         estimates = (
-            self.current_estimates
-            if self.current_estimates.size() > 0
-            else self.initial_estimates
+            self.current_estimates if self.current_estimates.size() > 0 else self.initial_estimates
         )
 
         for pose_id in range(self._current_pose_id):
@@ -221,11 +219,9 @@ class PoseGraph:
             Total graph error.
         """
         estimates = (
-            self.current_estimates
-            if self.current_estimates.size() > 0
-            else self.initial_estimates
+            self.current_estimates if self.current_estimates.size() > 0 else self.initial_estimates
         )
-        return self.graph.error(estimates)
+        return float(self.graph.error(estimates))
 
     def size(self) -> int:
         """Get the number of factors in the graph.
@@ -233,7 +229,7 @@ class PoseGraph:
         Returns:
             Number of factors.
         """
-        return self.graph.size()
+        return int(self.graph.size())
 
     def add_node(self, node: "PoseNode") -> int:
         """Add a node to the graph.

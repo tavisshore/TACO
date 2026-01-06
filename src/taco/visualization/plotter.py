@@ -90,13 +90,9 @@ def plot_pose_graph(
 
     # Mark start and end
     if len(positions) > 0:
-        ax.scatter(
-            positions[0, 0], positions[0, 1], positions[0, 2], c="g", s=100, label="Start"
-        )
+        ax.scatter(positions[0, 0], positions[0, 1], positions[0, 2], c="g", s=100, label="Start")
     if len(positions) > 1:
-        ax.scatter(
-            positions[-1, 0], positions[-1, 1], positions[-1, 2], c="r", s=100, label="End"
-        )
+        ax.scatter(positions[-1, 0], positions[-1, 1], positions[-1, 2], c="r", s=100, label="End")
 
     ax.set_xlabel("X (m)")
     ax.set_ylabel("Y (m)")

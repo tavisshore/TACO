@@ -13,11 +13,13 @@ try:
     from .dataset import ImageDatabaseDataset, TripletDataset
     from .model import ImageRetrievalModel
 
-    __all__.extend([
-        "ImageRetrievalModel",
-        "TripletDataset",
-        "ImageDatabaseDataset",
-    ])
+    __all__.extend(
+        [
+            "ImageRetrievalModel",
+            "TripletDataset",
+            "ImageDatabaseDataset",
+        ]
+    )
 except ImportError:
     # PyTorch not available, skip model imports
     pass

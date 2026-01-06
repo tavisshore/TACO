@@ -14,13 +14,15 @@ try:
         TripletDataset,
     )
 
-    __all__.extend([
-        "CVGLLocalizer",
-        "CVGLMeasurement",
-        "ImageRetrievalModel",
-        "TripletDataset",
-        "ImageDatabaseDataset",
-    ])
+    __all__.extend(
+        [
+            "CVGLLocalizer",
+            "CVGLMeasurement",
+            "ImageRetrievalModel",
+            "TripletDataset",
+            "ImageDatabaseDataset",
+        ]
+    )
 except ImportError:
     # PyTorch not available, CVGL sensor not available
     pass

@@ -59,7 +59,7 @@ class IMUPreintegrator:
         self.params.setBiasOmegaCovariance(np.eye(3) * kGyroBiasSigma**2)
 
         # Current preintegrated measurement
-        self.pim: gtsam.PreintegratedImuMeasurements = None  # type: ignore
+        self.pim: gtsam.PreintegratedImuMeasurements
         self._reset_pim()
 
     def _reset_pim(self, bias: gtsam.imuBias.ConstantBias = gtsam.imuBias.ConstantBias()) -> None:
@@ -143,7 +143,9 @@ class IMUPreintegrator:
         predicted_pose = predicted_nav_state.pose()
         predicted_velocity = predicted_nav_state.velocity()
 
-        return predicted_pose, np.array([predicted_velocity[0], predicted_velocity[1], predicted_velocity[2]])
+        return predicted_pose, np.array(
+            [predicted_velocity[0], predicted_velocity[1], predicted_velocity[2]]
+        )
 
     def get_delta_pose(self) -> gtsam.Pose3:
         """Get the preintegrated delta pose.

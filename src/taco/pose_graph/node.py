@@ -135,9 +135,7 @@ def create_noise_model_gaussian(
     return gtsam.noiseModel.Gaussian.Covariance(covariance)
 
 
-def create_noise_model_isotropic(
-    dim: int, sigma: float
-) -> gtsam.noiseModel.Isotropic:
+def create_noise_model_isotropic(dim: int, sigma: float) -> gtsam.noiseModel.Isotropic:
     """Create an isotropic noise model.
 
     Args:

@@ -188,9 +188,7 @@ class ImageRetrievalModel(L.LightningModule):
         negative_emb = self(negative_img)
 
         # Compute triplet loss
-        triplet_loss = self.compute_triplet_loss(
-            anchor_emb, positive_emb, negative_emb
-        )
+        triplet_loss = self.compute_triplet_loss(anchor_emb, positive_emb, negative_emb)
 
         # Compute contrastive loss on anchors
         contrastive_loss = self.compute_contrastive_loss(anchor_emb, labels)
@@ -227,9 +225,7 @@ class ImageRetrievalModel(L.LightningModule):
         negative_emb = self(negative_img)
 
         # Compute triplet loss
-        triplet_loss = self.compute_triplet_loss(
-            anchor_emb, positive_emb, negative_emb
-        )
+        triplet_loss = self.compute_triplet_loss(anchor_emb, positive_emb, negative_emb)
 
         # Compute contrastive loss
         contrastive_loss = self.compute_contrastive_loss(anchor_emb, labels)
@@ -280,7 +276,7 @@ class ImageRetrievalModel(L.LightningModule):
             },
         }
 
-    @torch.no_grad()
+    @torch.no_grad()  # type: ignore[untyped-decorator]
     def encode_image(
         self,
         image: np.ndarray,
@@ -314,9 +310,9 @@ class ImageRetrievalModel(L.LightningModule):
         self.eval()
         embedding = self(img_tensor)
 
-        return embedding.cpu().numpy()[0]
+        return embedding.cpu().numpy()[0]  # type: ignore[no-any-return]
 
-    @torch.no_grad()
+    @torch.no_grad()  # type: ignore[untyped-decorator]
     def compute_similarity(
         self,
         embedding1: np.ndarray,
@@ -338,7 +334,7 @@ class ImageRetrievalModel(L.LightningModule):
         # Compute cosine similarity
         similarity = F.cosine_similarity(emb1, emb2, dim=0)
 
-        return similarity.item()
+        return float(similarity.item())
 
     def retrieve_similar(
         self,
