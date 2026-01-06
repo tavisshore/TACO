@@ -37,15 +37,15 @@ class CameraModel:
     @property
     def intrinsic_matrix(self) -> npt.NDArray[np.float64]:
         """Get 3x3 camera intrinsic matrix."""
-        return np.array([
-            [self.fx, 0.0, self.cx],
-            [0.0, self.fy, self.cy],
-            [0.0, 0.0, 1.0],
-        ])
+        return np.array(
+            [
+                [self.fx, 0.0, self.cx],
+                [0.0, self.fy, self.cy],
+                [0.0, 0.0, 1.0],
+            ]
+        )
 
-    def project(
-        self, points_3d: npt.NDArray[np.float64]
-    ) -> npt.NDArray[np.float64]:
+    def project(self, points_3d: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
         """Project 3D points to 2D image coordinates.
 
         Args:

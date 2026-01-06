@@ -7,9 +7,7 @@ import networkx as nx
 import numpy as np
 
 
-def simplify_sharp_turns(
-    graph: nx.MultiDiGraph, angle_threshold: float = 30.0
-) -> nx.MultiDiGraph:
+def simplify_sharp_turns(graph: nx.MultiDiGraph, angle_threshold: float = 30.0) -> nx.MultiDiGraph:
     """Simplify graph by removing nodes at sharp turns.
 
     This function processes a road network graph and merges nodes
@@ -26,10 +24,7 @@ def simplify_sharp_turns(
     g = graph.copy()
 
     # Find nodes with exactly 2 edges (potential simplification candidates)
-    nodes_to_check = [
-        node for node in g.nodes()
-        if g.degree(node) == 2
-    ]
+    nodes_to_check = [node for node in g.nodes() if g.degree(node) == 2]
 
     nodes_to_remove = []
 
@@ -69,9 +64,7 @@ def simplify_sharp_turns(
     return g
 
 
-def calculate_turn_angle(
-    p1: tuple, p2: tuple, p3: tuple
-) -> float:
+def calculate_turn_angle(p1: tuple, p2: tuple, p3: tuple) -> float:
     """Calculate the angle at p2 formed by p1-p2-p3.
 
     Args:
@@ -117,9 +110,7 @@ def calculate_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> flo
     delta_lambda = lambda2 - lambda1
 
     x = math.sin(delta_lambda) * math.cos(phi2)
-    y = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(
-        delta_lambda
-    )
+    y = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(delta_lambda)
 
     theta = math.atan2(x, y)
     bearing = (math.degrees(theta) + 360) % 360

@@ -32,7 +32,7 @@ class PoseGraph:
         self,
         pose: gtsam.Pose3,
         timestamp: float,
-        pose_id: Optional[int] = None,
+        pose_id: int | None = None,
     ) -> int:
         """Add a pose estimate to the graph.
 
@@ -165,7 +165,7 @@ class PoseGraph:
         self.current_estimates = optimizer.optimize()
         return self.current_estimates
 
-    def get_pose(self, pose_id: int) -> Optional[gtsam.Pose3]:
+    def get_pose(self, pose_id: int) -> gtsam.Pose3 | None:
         """Get an optimized pose by ID.
 
         Args:

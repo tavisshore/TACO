@@ -20,7 +20,7 @@ class TripletDataset(Dataset):
         self,
         image_dir: Path,
         triplets_file: Path,
-        transform: Optional[Callable] = None,
+        transform: Callable | None = None,
         image_size: Tuple[int, int] = (224, 224),
     ) -> None:
         """Initialize triplet dataset.
@@ -142,7 +142,7 @@ class ImageDatabaseDataset(Dataset):
         self,
         image_dir: Path,
         images_file: Path,
-        transform: Optional[Callable] = None,
+        transform: Callable | None = None,
         image_size: Tuple[int, int] = (224, 224),
     ) -> None:
         """Initialize image database dataset.
@@ -257,7 +257,7 @@ class ImageDatabaseDataset(Dataset):
 def create_triplet_mining_dataset(
     image_dir: Path,
     annotations_file: Path,
-    transform: Optional[Callable] = None,
+    transform: Callable | None = None,
     num_negatives: int = 5,
 ) -> TripletDataset:
     """Create triplet dataset with online hard negative mining.

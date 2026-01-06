@@ -36,7 +36,7 @@ class GraphOptimizer:
     def optimize(
         self,
         graph: PoseGraph,
-        fixed_poses: Optional[List[int]] = None,
+        fixed_poses: List[int] | None = None,
     ) -> gtsam.Values:
         """Optimize the pose graph.
 

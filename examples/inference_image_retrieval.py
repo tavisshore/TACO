@@ -73,7 +73,7 @@ def query_image(model, query_path, database_embeddings, database_paths, top_k=10
     )
 
     # Format results
-    results = [(database_paths[idx], sim) for idx, sim in zip(indices, similarities)]
+    results = [(database_paths[idx], sim) for idx, sim in zip(indices, similarities, strict=False)]
 
     return results
 
@@ -96,9 +96,7 @@ def main():
     print(f"✓ Model loaded (device: {device})")
 
     # Build database
-    database_embeddings, database_paths = build_database(
-        model, database_dir, device=device
-    )
+    database_embeddings, database_paths = build_database(model, database_dir, device=device)
 
     # Save database for later use
     database_file = Path("outputs/database.npz")
@@ -111,9 +109,7 @@ def main():
 
     # Query
     print(f"\nQuerying for: {query_path}")
-    results = query_image(
-        model, query_path, database_embeddings, database_paths, top_k=top_k
-    )
+    results = query_image(model, query_path, database_embeddings, database_paths, top_k=top_k)
 
     print(f"\nTop {top_k} matches:")
     for i, (path, similarity) in enumerate(results, 1):

@@ -22,7 +22,7 @@ class CVGLMeasurement:
     covariance: npt.NDArray[np.float64]  # 6x6 covariance (position + orientation)
     confidence: float  # Matching confidence [0, 1]
     num_inliers: int  # Number of inlier features
-    image_id: Optional[str] = None  # Reference image identifier
+    image_id: str | None = None  # Reference image identifier
 
     def __post_init__(self) -> None:
         """Validate measurement data."""

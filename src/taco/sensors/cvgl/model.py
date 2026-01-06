@@ -279,7 +279,7 @@ class ImageRetrievalModel(L.LightningModule):
     def encode_image(
         self,
         image: np.ndarray,
-        device: Optional[torch.device] = None,
+        device: torch.device | None = None,
     ) -> np.ndarray:
         """Encode a single image to embedding.
 

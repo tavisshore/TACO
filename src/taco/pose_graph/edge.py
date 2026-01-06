@@ -33,7 +33,7 @@ class Edge:
     relative_transform: npt.NDArray[np.float64]  # 4x4 transformation matrix
     information_matrix: npt.NDArray[np.float64]  # 6x6 information matrix
     edge_type: EdgeType
-    measurement_timestamp: Optional[float] = None
+    measurement_timestamp: float | None = None
 
     def __post_init__(self) -> None:
         """Validate edge data."""

@@ -1,22 +1,17 @@
 """Satellite map downloading utilities."""
 
+from __future__ import annotations
+
 import hashlib
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import TYPE_CHECKING, Tuple
 
 import numpy as np
+import requests
+from PIL import Image
 
-# Optional PIL import
-try:
-    from PIL import Image
-except ImportError:
-    Image = None
-
-# Optional requests import
-try:
-    import requests
-except ImportError:
-    requests = None
+if TYPE_CHECKING:
+    pass
 
 
 # Cache directory for satellite images
@@ -27,7 +22,7 @@ def download_satmap(
     coord: Tuple[float, float],
     zoom: int = 18,
     size: Tuple[int, int] = (640, 640),
-    cache_dir: Optional[Path] = None,
+    cache_dir: Path | None = None,
 ) -> str:
     """Download satellite map image for a given coordinate.
 

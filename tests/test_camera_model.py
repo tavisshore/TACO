@@ -95,12 +95,14 @@ class TestCameraModel:
 
     def test_project_multiple_points(self, default_camera: CameraModel) -> None:
         """Test projecting multiple points at once."""
-        points = np.array([
-            [0.0, 0.0, 1.0],
-            [1.0, 0.0, 1.0],
-            [0.0, 1.0, 1.0],
-            [1.0, 1.0, 2.0],
-        ])
+        points = np.array(
+            [
+                [0.0, 0.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [0.0, 1.0, 1.0],
+                [1.0, 1.0, 2.0],
+            ]
+        )
         projected = default_camera.project(points)
 
         assert projected.shape == (4, 2)
@@ -139,11 +141,13 @@ class TestCameraModel:
 
     def test_project_unproject_roundtrip(self, default_camera: CameraModel) -> None:
         """Test project -> unproject roundtrip."""
-        original_points = np.array([
-            [0.5, 0.3, 2.0],
-            [-0.2, 0.4, 1.5],
-            [1.0, -0.5, 3.0],
-        ])
+        original_points = np.array(
+            [
+                [0.5, 0.3, 2.0],
+                [-0.2, 0.4, 1.5],
+                [1.0, -0.5, 3.0],
+            ]
+        )
 
         # Project points
         projected = default_camera.project(original_points)
@@ -159,9 +163,14 @@ class TestCameraModel:
         point = np.array([[0.5, 0.5, 1.0]])
 
         # Project with undistorted camera
-        undistorted_cam = CameraModel({
-            "fx": 500.0, "fy": 500.0, "cx": 320.0, "cy": 240.0,
-        })
+        undistorted_cam = CameraModel(
+            {
+                "fx": 500.0,
+                "fy": 500.0,
+                "cx": 320.0,
+                "cy": 240.0,
+            }
+        )
         proj_undistorted = undistorted_cam.project(point)
 
         # Project with distorted camera
@@ -172,11 +181,13 @@ class TestCameraModel:
 
     def test_unproject_multiple_points(self, default_camera: CameraModel) -> None:
         """Test unprojecting multiple points."""
-        pixels = np.array([
-            [320.0, 240.0],
-            [420.0, 240.0],
-            [320.0, 340.0],
-        ])
+        pixels = np.array(
+            [
+                [320.0, 240.0],
+                [420.0, 240.0],
+                [320.0, 340.0],
+            ]
+        )
         depths = np.array([1.0, 2.0, 3.0])
 
         unprojected = default_camera.unproject(pixels, depths)

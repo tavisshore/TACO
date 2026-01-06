@@ -32,8 +32,8 @@ def train_retrieval_model(
     margin: float = 0.2,
     freeze_backbone: bool = False,
     pretrained: bool = True,
-    gpus: Optional[int] = None,
-    resume_from_checkpoint: Optional[Path] = None,
+    gpus: int | None = None,
+    resume_from_checkpoint: Path | None = None,
 ) -> None:
     """Train image retrieval model.
 

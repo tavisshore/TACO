@@ -4,12 +4,15 @@ This module provides data loaders for the KITTI odometry and raw datasets,
 including IMU data, camera images, and GPS coordinates.
 """
 
+from __future__ import annotations
+
 import glob
 import math
 import os
 from datetime import datetime
 from math import asin, atan2, cos, degrees, radians, sin
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import cv2
 import matplotlib.pyplot as plt
@@ -37,7 +40,9 @@ from .graph_refine import simplify_sharp_turns
 from .sat import download_satmap
 
 
-def destination_point(lat1, lon1, lat2, lon2, distance_m):
+def destination_point(
+    lat1: float, lon1: float, lat2: float, lon2: float, distance_m: float
+) -> Tuple[float, float]:
     """
     Compute the geographic coordinate `distance_m` meters from (lat1, lon1)
     in the direction of (lat2, lon2).

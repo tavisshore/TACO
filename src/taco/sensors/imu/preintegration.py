@@ -62,7 +62,7 @@ class IMUPreintegrator:
         self.pim: gtsam.PreintegratedImuMeasurements
         self._reset_pim()
 
-    def _reset_pim(self, bias: Optional[gtsam.imuBias.ConstantBias] = None) -> None:
+    def _reset_pim(self, bias: gtsam.imuBias.ConstantBias | None = None) -> None:
         """Reset the preintegrated measurements.
 
         Args:
@@ -72,7 +72,7 @@ class IMUPreintegrator:
             bias = gtsam.imuBias.ConstantBias()
         self.pim = gtsam.PreintegratedImuMeasurements(self.params, bias)
 
-    def reset(self, bias: Optional[gtsam.imuBias.ConstantBias] = None) -> None:
+    def reset(self, bias: gtsam.imuBias.ConstantBias | None = None) -> None:
         """Reset preintegrated measurements.
 
         Args:
@@ -98,8 +98,8 @@ class IMUPreintegrator:
     def integrate_measurements(
         self,
         imu_measurements: list[IMUData],
-        bias_accel: Optional[npt.NDArray[np.float64]] = None,
-        bias_gyro: Optional[npt.NDArray[np.float64]] = None,
+        bias_accel: npt.NDArray[np.float64] | None = None,
+        bias_gyro: npt.NDArray[np.float64] | None = None,
     ) -> None:
         """Preintegrate a list of IMU measurements.
 

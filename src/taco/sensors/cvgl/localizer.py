@@ -16,7 +16,7 @@ class CVGLLocalizer:
     against a pre-built map or database.
     """
 
-    def __init__(self, map_path: Optional[Path] = None) -> None:
+    def __init__(self, map_path: Path | None = None) -> None:
         """Initialize CVGL localizer.
 
         Args:
@@ -46,8 +46,8 @@ class CVGLLocalizer:
         self,
         image: npt.NDArray[np.uint8],
         timestamp: float,
-        camera_intrinsics: Optional[npt.NDArray[np.float64]] = None,
-    ) -> Optional[CVGLMeasurement]:
+        camera_intrinsics: npt.NDArray[np.float64] | None = None,
+    ) -> CVGLMeasurement | None:
         """Localize an image against the map.
 
         Args:

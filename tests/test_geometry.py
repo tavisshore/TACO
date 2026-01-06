@@ -203,4 +203,4 @@ class TestFindApexYawIndices:
 
         # All indices should be integers
         for idx in apex + starts + ends:
-            assert isinstance(idx, (int, np.integer))
+            assert isinstance(idx, int | np.integer)

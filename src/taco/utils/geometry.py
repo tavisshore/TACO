@@ -7,7 +7,7 @@ import numpy.typing as npt
 
 
 def rotate_trajectory(
-    trajectory: Union[List[npt.NDArray[np.float64]], npt.NDArray[np.float64]],
+    trajectory: List[npt.NDArray[np.float64]] | npt.NDArray[np.float64],
     axis: str = "z",
     degrees: float = 0.0,
 ) -> npt.NDArray[np.float64]:
@@ -56,23 +56,29 @@ def rotation_matrix(axis: str, degrees: float) -> npt.NDArray[np.float64]:
     c, s = np.cos(radians), np.sin(radians)
 
     if axis.lower() == "x":
-        return np.array([
-            [1, 0, 0],
-            [0, c, -s],
-            [0, s, c],
-        ])
+        return np.array(
+            [
+                [1, 0, 0],
+                [0, c, -s],
+                [0, s, c],
+            ]
+        )
     if axis.lower() == "y":
-        return np.array([
-            [c, 0, s],
-            [0, 1, 0],
-            [-s, 0, c],
-        ])
+        return np.array(
+            [
+                [c, 0, s],
+                [0, 1, 0],
+                [-s, 0, c],
+            ]
+        )
     if axis.lower() == "z":
-        return np.array([
-            [c, -s, 0],
-            [s, c, 0],
-            [0, 0, 1],
-        ])
+        return np.array(
+            [
+                [c, -s, 0],
+                [s, c, 0],
+                [0, 0, 1],
+            ]
+        )
     raise ValueError(f"Invalid axis: {axis}. Must be 'x', 'y', or 'z'.")
 
 
@@ -122,7 +128,7 @@ def find_apex_yaw_indices(
     valid_starts = []
     valid_ends = []
 
-    for start, end in zip(turn_starts, turn_ends):
+    for start, end in zip(turn_starts, turn_ends, strict=False):
         if end - start >= min_turn_length:
             # Find apex (maximum absolute yaw rate) in this turn
             turn_yaw_rates = np.abs(yaw_rate[start:end])

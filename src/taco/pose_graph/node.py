@@ -21,7 +21,7 @@ class PoseNode:
     position: npt.NDArray[np.float64]  # 3D position (x, y, z)
     orientation: npt.NDArray[np.float64]  # Quaternion (w, x, y, z) or rotation matrix
     timestamp: float
-    covariance: Optional[npt.NDArray[np.float64]] = None  # 6x6 covariance matrix
+    covariance: npt.NDArray[np.float64] | None = None  # 6x6 covariance matrix
 
     def __post_init__(self) -> None:
         """Validate node data."""
@@ -62,7 +62,7 @@ class PoseNode:
     def from_gtsam_pose(
         pose: gtsam.Pose3,
         timestamp: float,
-        covariance: Optional[npt.NDArray[np.float64]] = None,
+        covariance: npt.NDArray[np.float64] | None = None,
     ) -> "PoseNode":
         """Create PoseNode from GTSAM Pose3.
 

@@ -134,7 +134,7 @@ dmypy.json
 Thumbs.db
 
 # Data files
-*.pth 
+*.pth
 *.h5
 *.npy
 *.npz
