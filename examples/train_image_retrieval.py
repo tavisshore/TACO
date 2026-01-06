@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from taco.localization.cvgl import ImageRetrievalModel, TripletDataset
+from taco.sensors.cvgl import ImageRetrievalModel, TripletDataset
 from torch.utils.data import DataLoader
 import lightning as L
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping

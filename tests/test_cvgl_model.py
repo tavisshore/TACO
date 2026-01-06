@@ -8,7 +8,7 @@ pytorch_available = True
 try:
     import torch
 
-    from taco.localization.cvgl import ImageRetrievalModel
+    from taco.sensors.cvgl import ImageRetrievalModel
 except ImportError:
     pytorch_available = False
 

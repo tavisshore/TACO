@@ -1,9 +1,9 @@
-"""Tests for CVGL localization."""
+"""Tests for CVGL sensor."""
 
 import numpy as np
 import pytest
 
-from taco.localization.cvgl import CVGLMeasurement
+from taco.sensors.cvgl import CVGLMeasurement
 
 
 class TestCVGLMeasurement:

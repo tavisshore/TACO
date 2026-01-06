@@ -122,7 +122,7 @@ pip install -e ".[all]"
 ### Training
 
 ```bash
-python -m taco.localization.cvgl.train \
+python -m taco.sensors.cvgl.train \
     --train-data-dir data/images/train \
     --train-triplets data/triplets/train.txt \
     --val-data-dir data/images/val \
@@ -137,7 +137,7 @@ python -m taco.localization.cvgl.train \
 ### Inference
 
 ```python
-from taco.localization.cvgl import ImageRetrievalModel
+from taco.sensors.cvgl import ImageRetrievalModel
 import numpy as np
 from PIL import Image
 
@@ -179,7 +179,7 @@ indices, similarities = model.retrieve_similar(
 The trained model integrates seamlessly with the existing CVGL infrastructure:
 
 ```python
-from taco.localization.cvgl import CVGLLocalizer, ImageRetrievalModel
+from taco.sensors.cvgl import CVGLLocalizer, ImageRetrievalModel
 
 # Load trained model
 model = ImageRetrievalModel.load_from_checkpoint("best.ckpt")
@@ -242,10 +242,10 @@ To test the implementation:
 
 ```bash
 # Run basic import test
-python -c "from taco.localization.cvgl import ImageRetrievalModel; print('✓ Import successful')"
+python -c "from taco.sensors.cvgl import ImageRetrievalModel; print('✓ Import successful')"
 
 # Test model creation
-python -c "from taco.localization.cvgl import ImageRetrievalModel; model = ImageRetrievalModel(); print(f'✓ Model created: {sum(p.numel() for p in model.parameters())/1e6:.1f}M params')"
+python -c "from taco.sensors.cvgl import ImageRetrievalModel; model = ImageRetrievalModel(); print(f'✓ Model created: {sum(p.numel() for p in model.parameters())/1e6:.1f}M params')"
 ```
 
 ## Summary

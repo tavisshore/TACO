@@ -134,7 +134,7 @@ To verify the fix works correctly (when PyTorch is installed):
 
 ```python
 import torch
-from taco.localization.cvgl import ImageRetrievalModel
+from taco.sensors.cvgl import ImageRetrievalModel
 
 # Create model
 model = ImageRetrievalModel(embedding_dim=512, pretrained=False)

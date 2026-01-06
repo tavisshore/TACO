@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from taco.localization.cvgl import ImageRetrievalModel
+from taco.sensors.cvgl import ImageRetrievalModel
 
 
 def build_database(model, image_dir, device="cuda"):

@@ -60,7 +60,7 @@ Each line contains:
 ### Training Command
 
 ```bash
-python -m taco.localization.cvgl.train \
+python -m taco.sensors.cvgl.train \
     --train-data-dir /path/to/train/images \
     --train-triplets /path/to/train/triplets.txt \
     --val-data-dir /path/to/val/images \
@@ -106,7 +106,7 @@ For best results:
 ### Load Trained Model
 
 ```python
-from taco.localization.cvgl import ImageRetrievalModel
+from taco.sensors.cvgl import ImageRetrievalModel
 import torch
 
 # Load from checkpoint
@@ -174,7 +174,7 @@ for idx, sim in zip(indices, similarities):
 The trained model can be integrated into the `CVGLLocalizer`:
 
 ```python
-from taco.localization.cvgl import CVGLLocalizer, ImageRetrievalModel
+from taco.sensors.cvgl import CVGLLocalizer, ImageRetrievalModel
 import numpy as np
 
 # Load model
