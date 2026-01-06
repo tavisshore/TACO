@@ -1,7 +1,7 @@
 # TACO - Pose Graph Optimization
 
-[![CI](https://github.com/yourusername/taco/workflows/CI/badge.svg)](https://github.com/yourusername/taco/actions)
-[![codecov](https://codecov.io/gh/yourusername/taco/branch/main/graph/badge.svg)](https://codecov.io/gh/yourusername/taco)
+[![CI](https://github.com/tavisshore/taco/workflows/CI/badge.svg)](https://github.com/tavisshore/taco/actions)
+[![codecov](https://codecov.io/gh/tavisshore/taco/branch/main/graph/badge.svg)](https://codecov.io/gh/tavisshore/taco)
 [![PyPI version](https://badge.fury.io/py/taco.svg)](https://badge.fury.io/py/taco)
 [![Python versions](https://img.shields.io/pypi/pyversions/taco.svg)](https://pypi.org/project/taco/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -38,7 +38,7 @@ pip install taco
 For development:
 
 ```bash
-git clone https://github.com/yourusername/taco.git
+git clone https://github.com/tavisshore/taco.git
 cd taco
 pip install -e ".[dev,docs]"
 pre-commit install
