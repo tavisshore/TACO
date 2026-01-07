@@ -107,7 +107,7 @@ def main() -> None:
         pose = graph.get_pose(pose_id)
         if pose:
             t = pose.translation()
-            print(f"   Pose {pose_id}: [{t.x():.3f}, {t.y():.3f}, {t.z():.3f}]")
+            print(f"   Pose {pose_id}: [{t[0]:.3f}, {t[1]:.3f}, {t[2]:.3f}]")
 
     # Visualize
     print("\n11. Visualizing results...")

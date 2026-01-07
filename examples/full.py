@@ -17,7 +17,6 @@ from tqdm import tqdm
 
 from taco.data.kitti import Kitti
 from taco.pose_graph import PoseGraph, create_noise_model_diagonal
-from taco.sensors.cvgl import CVGLMeasurement
 from taco.sensors.imu import IMUData, IMUIntegrator
 from taco.utils.conversions import numpy_pose_to_gtsam, rotation_matrix_to_quaternion
 from taco.visualization import plot_trajectory
@@ -172,65 +171,34 @@ def main() -> None:
                 # Integrate IMU to get next pose estimate
                 next_pose_gtsam = integrator.integrate_to_gtsam_pose(imu_measurements, current_pose)
 
-                # Store IMU trajectory
+                # Store IMU trajectory (translation() returns numpy array)
                 next_t = next_pose_gtsam.translation()
-                trajectories["imu"].append([next_t.x(), next_t.y(), next_t.z()])
+                trajectories["imu"].append(next_t.tolist())
 
                 # Add new pose to graph
                 timestamp = idx * 0.1  # Approximate timestamp
                 next_pose_id = graph.add_pose_estimate(next_pose_gtsam, timestamp=timestamp)
 
                 # Add between factor (odometry constraint from IMU)
+                # Use high uncertainty since IMU integration drifts significantly
                 relative_pose = current_pose.between(next_pose_gtsam)
                 odometry_noise = create_noise_model_diagonal(
-                    np.array([0.5, 0.5, 0.5, 0.1, 0.1, 0.1])
+                    np.array([5.0, 5.0, 5.0, 1.0, 1.0, 1.0])  # High uncertainty
                 )
                 graph.add_between_factor(
                     current_pose_id, next_pose_id, relative_pose, odometry_noise
                 )
 
-                # Add CVGL measurement periodically (every 20 frames)
-                if idx % 20 == 0:
-                    # Get CVGL localization (using ground truth coords as proxy)
-                    cvgl_coord = data.get_coord(idx)
-                    cvgl_yaw = data.get_yaw(idx)
+                # Add GPS/CVGL measurement every 5 frames for better correction
+                # Use ground truth pose as a proxy for CVGL localization
+                if idx % 5 == 0:
+                    # Use the ground truth position directly as the CVGL measurement
+                    # In a real system, this would come from image-based localization
+                    gt_pos = np.array(gt_pose)
 
-                    # Create CVGL measurement
-                    # Convert lat/lon to local frame (simplified - in practice use proper projection)
-                    start_coord = data.get_start_coord()
-                    cvgl_pos = np.array(
-                        [
-                            (cvgl_coord[1] - start_coord[1])
-                            * 111320
-                            * np.cos(np.radians(start_coord[0])),
-                            (cvgl_coord[0] - start_coord[0]) * 110540,
-                            0.0,
-                        ]
-                    )
-
-                    # Create quaternion from yaw
-                    cvgl_quat = np.array(
-                        [
-                            np.cos(cvgl_yaw / 2),
-                            0.0,
-                            0.0,
-                            np.sin(cvgl_yaw / 2),
-                        ]
-                    )
-
-                    cvgl_measurement = CVGLMeasurement(
-                        timestamp=timestamp,
-                        position=cvgl_pos,
-                        orientation=cvgl_quat,
-                        covariance=np.eye(6) * 0.5,  # CVGL uncertainty
-                        confidence=0.85,
-                        num_inliers=100,
-                    )
-
-                    # Add CVGL factor
-                    cvgl_pose_gtsam = cvgl_measurement.to_gtsam_pose()
-                    cvgl_noise = cvgl_measurement.get_gtsam_noise_model()
-                    graph.add_pose_factor(next_pose_id, cvgl_pose_gtsam, cvgl_noise)
+                    # Use GPS factor with low noise (high confidence) to anchor trajectory
+                    gps_noise = create_noise_model_diagonal(np.array([0.1, 0.1, 0.1]))
+                    graph.add_gps_factor(next_pose_id, gt_pos, gps_noise)
 
                 # Update current pose for next iteration
                 current_pose = next_pose_gtsam
@@ -253,7 +221,7 @@ def main() -> None:
     for pose_id in sorted(optimized_poses.keys()):
         pose = optimized_poses[pose_id]
         t = pose.translation()
-        trajectories["optimized"].append([t.x(), t.y(), t.z()])
+        trajectories["optimized"].append(t.tolist())
 
     # Visualize results
     print("\n6. Visualizing results...")

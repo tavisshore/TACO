@@ -75,7 +75,7 @@ def plot_pose_graph(
     for pose_id in sorted(poses_dict.keys()):
         pose = poses_dict[pose_id]
         t = pose.translation()
-        positions.append([t.x(), t.y(), t.z()])
+        positions.append(t.tolist())
 
     positions = np.array(positions)
 
@@ -130,7 +130,7 @@ def plot_gtsam_values(
         if values.exists(symbol):
             pose = values.atPose3(symbol)
             t = pose.translation()
-            positions.append([t.x(), t.y(), t.z()])
+            positions.append(t.tolist())
 
     if len(positions) == 0:
         print("No poses found")

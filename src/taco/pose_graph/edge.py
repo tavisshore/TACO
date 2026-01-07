@@ -98,7 +98,7 @@ class Edge:
         t = relative_pose.translation()
         transform = np.eye(4)
         transform[:3, :3] = R
-        transform[:3, 3] = [t.x(), t.y(), t.z()]
+        transform[:3, 3] = t
 
         # Create information matrix from sigmas
         information = np.diag(1.0 / (noise_sigmas**2))

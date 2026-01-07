@@ -75,7 +75,7 @@ class PoseNode:
             PoseNode instance.
         """
         position = pose.translation()
-        position_array = np.array([position.x(), position.y(), position.z()])
+        position_array = np.asarray(position)
 
         rotation = pose.rotation().matrix()
 

@@ -114,8 +114,7 @@ def gtsam_pose_to_transform(pose: gtsam.Pose3) -> npt.NDArray[np.float64]:
     """
     T = np.eye(4)
     T[:3, :3] = pose.rotation().matrix()
-    t = pose.translation()
-    T[:3, 3] = [t.x(), t.y(), t.z()]
+    T[:3, 3] = pose.translation()
     return T
 
 
@@ -173,9 +172,7 @@ def gtsam_pose_to_numpy(
     Returns:
         Tuple of (position, rotation_matrix).
     """
-    position = pose.translation()
-    position_array = np.array([position.x(), position.y(), position.z()])
-
+    position_array = np.asarray(pose.translation())
     rotation_matrix = pose.rotation().matrix()
 
     return position_array, rotation_matrix

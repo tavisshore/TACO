@@ -73,8 +73,8 @@ class IMUIntegrator:
         # Integrate
         position, _velocity, orientation = self.integrate(imu_measurements, initial_R)
 
-        # Add initial position
-        final_position = np.array([initial_t.x(), initial_t.y(), initial_t.z()]) + position
+        # Add initial position (initial_t is already a numpy array from translation())
+        final_position = initial_t + position
 
         # Create GTSAM Pose3
         rot = gtsam.Rot3(orientation)
