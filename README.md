@@ -1,21 +1,20 @@
 # TACO: Trajectory Aligning Cross-view Optimisation
-
 [![CI](https://github.com/tavisshore/taco/workflows/CI/badge.svg)](https://github.com/tavisshore/taco/actions)
 [![codecov](https://codecov.io/gh/tavisshore/taco/branch/main/graph/badge.svg)](https://codecov.io/gh/tavisshore/taco)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 <!-- [![PyPI version](https://badge.fury.io/py/taco.svg)](https://badge.fury.io/py/taco) -->
 <!-- [![Python versions](https://img.shields.io/pypi/pyversions/taco.svg)](https://pypi.org/project/taco/) -->
 
-**TACO** is a Python library for pose graph optimization that fuses **IMU (Inertial Measurement Unit)** data with **CVGL (Computer Vision Global Localization)** image-based measurements for robust 6-DOF pose estimation.
+**TACO** is a Python library for pose graph optimisation that fuses **IMU (Inertial Measurement Unit)** data with **CVGL (Cross-View Geo-Localisation)** image-based measurements for robust 6-DOF pose estimation.
 
-Built on [**GTSAM (Georgia Tech Smoothing and Mapping)**](https://gtsam.org/), TACO provides a high-level interface for creating and optimizing pose graphs with modern optimization algorithms.
+Built on [**GTSAM (Georgia Tech Smoothing and Mapping)**](https://gtsam.org/), TACO provides a high-level interface for creating and optimising pose graphs with modern optimisation algorithms.
 
 <!-- ## Features
 ### Core Functionality
-- **GTSAM-Based Optimization**: Leverage state-of-the-art factor graph optimization
+- **GTSAM-Based Optimisation**: Leverage state-of-the-art factor graph optimisation
 - **IMU Preintegration**: Efficient IMU factor integration using GTSAM's preintegration
 - **Pose Graph Construction**: Build complex factor graphs with multiple sensor modalities
-- **CVGL Localization**: Image-based global localization with uncertainty quantification
+- **CVGL Localisation**: Image-based global localisation with uncertainty quantification
 - **Sensor Fusion**: Seamlessly combine odometry and absolute pose measurements
 - **iSAM2 Support**: Incremental smoothing and mapping for online SLAM -->
 
