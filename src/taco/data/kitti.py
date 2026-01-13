@@ -40,6 +40,52 @@ from .graph_refine import simplify_sharp_turns
 from .sat import download_satmap
 
 
+def latlon_to_local_meters(
+    coords: List[Tuple[float, float]],
+    origin: Tuple[float, float] | None = None,
+) -> np.ndarray:
+    """Convert lat/lon coordinates to local meters coordinate frame.
+
+    Uses the first coordinate (or specified origin) as the origin and converts
+    to a local East-North coordinate frame in meters.
+
+    Args:
+        coords: List of (lat, lon) tuples.
+        origin: Optional (lat, lon) tuple to use as origin. If None, uses first coord.
+
+    Returns:
+        Nx2 numpy array of positions in meters (x=East, y=North) relative to origin.
+    """
+    if len(coords) == 0:
+        return np.array([])
+
+    if origin is None:
+        origin = coords[0]
+
+    origin_lat, origin_lon = origin
+
+    # Earth radius in meters
+    earth_radius = 6371000.0
+
+    # Convert origin to radians
+    origin_lat_rad = math.radians(origin_lat)
+
+    positions = []
+    for lat, lon in coords:
+        # Convert to radians
+        lat_rad = math.radians(lat)
+        lon_rad = math.radians(lon)
+        origin_lon_rad = math.radians(origin_lon)
+
+        # Convert to local ENU coordinates (meters)
+        # x = East, y = North
+        x = earth_radius * (lon_rad - origin_lon_rad) * math.cos(origin_lat_rad)
+        y = earth_radius * (lat_rad - origin_lat_rad)
+        positions.append([x, y])
+
+    return np.array(positions, dtype=np.float64)
+
+
 def destination_point(
     lat1: float, lon1: float, lat2: float, lon2: float, distance_m: float
 ) -> Tuple[float, float]:
@@ -340,6 +386,14 @@ class Kitti:
                 degrees=90 - np.rad2deg(self.data.oxts[0].packet.yaw),
             )
         )
+
+        # Convert lat/lon ground truth to local meters coordinate frame
+        # This provides 2D positions (x, y) in meters relative to the first position
+        self.gt_pos_meters = torch.tensor(
+            latlon_to_local_meters(self.gt_coords),
+            dtype=torch.float32,
+        )
+
         self.duration = 2
 
         # CVGL Compass
@@ -425,6 +479,13 @@ class Kitti:
     def get_start_yaw(self):
         return self.yaws[0]
 
+    def get_timestamp(self, frame=None):
+        return (
+            datetime.timestamp(self.data.timestamps[self.frame_id])
+            if frame is None
+            else datetime.timestamp(self.data.timestamps[frame])
+        )
+
     # IMU
     def get_imu(self, i):
         start_frame = i - self.duration + 1
@@ -446,7 +507,19 @@ class Kitti:
         return self.yaws[0] * 2  # Right - why is it halved??
 
     def get_init_value(self):
-        return {"pos": self.gt_pos[:1], "rot": self.gt_rot[:1], "vel": self.gt_vel[:1]}
+        return {"pos": self.gt_pos_meters[:1], "rot": self.gt_rot[:1], "vel": self.gt_vel[:1]}
+
+    def get_pos_meters(self, frame: int | None = None) -> np.ndarray:
+        """Get position in meters (x, y) relative to start.
+
+        Args:
+            frame: Frame index. If None, returns current frame position.
+
+        Returns:
+            2D position array [x, y] in meters.
+        """
+        idx = self.frame_id if frame is None else frame
+        return self.gt_pos_meters[idx].numpy()
 
     def setup_graph(self):
         g = ox.graph.graph_from_point(

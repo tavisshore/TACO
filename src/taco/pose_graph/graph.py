@@ -1,4 +1,4 @@
-"""Pose graph implementation using GTSAM."""
+"""Pose graph implementation using GTSAM Pose2 for 2D vehicle trajectories."""
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -12,10 +12,10 @@ if TYPE_CHECKING:
 
 
 class PoseGraph:
-    """Main pose graph class for sensor fusion using GTSAM.
+    """Main pose graph class for sensor fusion using GTSAM Pose2.
 
     Combines IMU measurements and CVGL image localization data into
-    a unified factor graph for optimization.
+    a unified factor graph for 2D trajectory optimization (x, y, yaw).
     """
 
     def __init__(self) -> None:
@@ -30,14 +30,14 @@ class PoseGraph:
 
     def add_pose_estimate(
         self,
-        pose: gtsam.Pose3,
+        pose: gtsam.Pose2,
         timestamp: float,
         pose_id: int | None = None,
     ) -> int:
         """Add a pose estimate to the graph.
 
         Args:
-            pose: The 6-DOF pose (GTSAM Pose3).
+            pose: The 2D pose (GTSAM Pose2: x, y, yaw).
             timestamp: Timestamp of the pose.
             pose_id: Optional pose identifier. If None, auto-increments.
 
@@ -57,7 +57,7 @@ class PoseGraph:
     def add_prior_factor(
         self,
         pose_id: int,
-        pose: gtsam.Pose3,
+        pose: gtsam.Pose2,
         noise_model: gtsam.noiseModel.Base,
     ) -> None:
         """Add a prior factor to fix a pose.
@@ -65,17 +65,17 @@ class PoseGraph:
         Args:
             pose_id: The pose identifier.
             pose: The prior pose value.
-            noise_model: Noise model for the prior.
+            noise_model: Noise model for the prior (3x3 for Pose2).
         """
         symbol = gtsam.symbol("x", pose_id)
-        prior_factor = gtsam.PriorFactorPose3(symbol, pose, noise_model)
+        prior_factor = gtsam.PriorFactorPose2(symbol, pose, noise_model)
         self.graph.add(prior_factor)
 
     def add_between_factor(
         self,
         from_pose_id: int,
         to_pose_id: int,
-        relative_pose: gtsam.Pose3,
+        relative_pose: gtsam.Pose2,
         noise_model: gtsam.noiseModel.Base,
     ) -> None:
         """Add a between factor (odometry constraint).
@@ -84,43 +84,23 @@ class PoseGraph:
             from_pose_id: Source pose ID.
             to_pose_id: Target pose ID.
             relative_pose: Relative transformation from source to target.
-            noise_model: Noise model for the measurement.
+            noise_model: Noise model for the measurement (3x3 for Pose2).
         """
         from_symbol = gtsam.symbol("x", from_pose_id)
         to_symbol = gtsam.symbol("x", to_pose_id)
 
-        between_factor = gtsam.BetweenFactorPose3(
+        between_factor = gtsam.BetweenFactorPose2(
             from_symbol, to_symbol, relative_pose, noise_model
         )
         self.graph.add(between_factor)
 
-    def add_gps_factor(
-        self,
-        pose_id: int,
-        position: npt.NDArray[np.float64],
-        noise_model: gtsam.noiseModel.Base,
-    ) -> None:
-        """Add a GPS/absolute position factor.
-
-        Args:
-            pose_id: The pose identifier.
-            position: 3D position measurement.
-            noise_model: Noise model for the measurement.
-        """
-        symbol = gtsam.symbol("x", pose_id)
-        point = gtsam.Point3(position[0], position[1], position[2])
-
-        # Use GPSFactor for absolute position measurements
-        gps_factor = gtsam.GPSFactor(symbol, point, noise_model)
-        self.graph.add(gps_factor)
-
     def add_pose_factor(
         self,
         pose_id: int,
-        pose: gtsam.Pose3,
+        pose: gtsam.Pose2,
         noise_model: gtsam.noiseModel.Base,
     ) -> None:
-        """Add a full 6-DOF pose factor (e.g., from CVGL).
+        """Add a full 2D pose factor (e.g., from CVGL).
 
         Args:
             pose_id: The pose identifier.
@@ -128,7 +108,7 @@ class PoseGraph:
             noise_model: Noise model for the measurement.
         """
         symbol = gtsam.symbol("x", pose_id)
-        pose_factor = gtsam.PriorFactorPose3(symbol, pose, noise_model)
+        pose_factor = gtsam.PriorFactorPose2(symbol, pose, noise_model)
         self.graph.add(pose_factor)
 
     def optimize(
@@ -165,27 +145,27 @@ class PoseGraph:
         self.current_estimates = optimizer.optimize()
         return self.current_estimates
 
-    def get_pose(self, pose_id: int) -> gtsam.Pose3 | None:
+    def get_pose(self, pose_id: int) -> gtsam.Pose2 | None:
         """Get an optimized pose by ID.
 
         Args:
             pose_id: The pose identifier.
 
         Returns:
-            The optimized Pose3 if available, None otherwise.
+            The optimized Pose2 if available, None otherwise.
         """
         symbol = gtsam.symbol("x", pose_id)
         if self.current_estimates.exists(symbol):
-            return self.current_estimates.atPose3(symbol)
+            return self.current_estimates.atPose2(symbol)
         if self.initial_estimates.exists(symbol):
-            return self.initial_estimates.atPose3(symbol)
+            return self.initial_estimates.atPose2(symbol)
         return None
 
-    def get_all_poses(self) -> Dict[int, gtsam.Pose3]:
+    def get_all_poses(self) -> Dict[int, gtsam.Pose2]:
         """Get all optimized poses.
 
         Returns:
-            Dictionary mapping pose IDs to Pose3 objects.
+            Dictionary mapping pose IDs to Pose2 objects.
         """
         poses = {}
         estimates = (
@@ -195,7 +175,7 @@ class PoseGraph:
         for pose_id in range(self._current_pose_id):
             symbol = gtsam.symbol("x", pose_id)
             if estimates.exists(symbol):
-                poses[pose_id] = estimates.atPose3(symbol)
+                poses[pose_id] = estimates.atPose2(symbol)
 
         return poses
 
@@ -206,7 +186,7 @@ class PoseGraph:
             pose_id: The pose identifier.
 
         Returns:
-            6x6 covariance matrix.
+            3x3 covariance matrix for Pose2.
         """
         symbol = gtsam.symbol("x", pose_id)
         marginals = gtsam.Marginals(self.graph, self.current_estimates)

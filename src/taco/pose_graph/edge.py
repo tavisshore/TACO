@@ -1,11 +1,11 @@
-"""Pose graph edge representation for GTSAM.
+"""Pose graph edge representation for GTSAM Pose2.
 
-This module provides helper classes for creating GTSAM factors.
+This module provides helper classes for creating GTSAM factors
+for 2D vehicle trajectory optimization.
 """
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional
 
 import gtsam
 import numpy as np
@@ -23,42 +23,40 @@ class EdgeType(Enum):
 
 @dataclass
 class Edge:
-    """Represents a constraint between two poses for GTSAM integration.
+    """Represents a constraint between two 2D poses for GTSAM integration.
 
     This is a convenience wrapper that can be converted to GTSAM factors.
+    Uses 3x3 SE(2) transformation matrices for relative poses.
     """
 
     from_node_id: int
     to_node_id: int
-    relative_transform: npt.NDArray[np.float64]  # 4x4 transformation matrix
-    information_matrix: npt.NDArray[np.float64]  # 6x6 information matrix
+    relative_transform: npt.NDArray[np.float64]  # 3x3 SE(2) transformation matrix
+    information_matrix: npt.NDArray[np.float64]  # 3x3 information matrix
     edge_type: EdgeType
     measurement_timestamp: float | None = None
 
     def __post_init__(self) -> None:
         """Validate edge data."""
-        if self.relative_transform.shape != (4, 4):
-            raise ValueError("Relative transform must be a 4x4 matrix")
-        if self.information_matrix.shape != (6, 6):
-            raise ValueError("Information matrix must be 6x6")
+        if self.relative_transform.shape != (3, 3):
+            raise ValueError("Relative transform must be a 3x3 SE(2) matrix")
+        if self.information_matrix.shape != (3, 3):
+            raise ValueError("Information matrix must be 3x3 for Pose2")
 
-    def to_gtsam_between_factor(self) -> gtsam.BetweenFactorPose3:
-        """Convert to GTSAM BetweenFactorPose3.
+    def to_gtsam_between_factor(self) -> gtsam.BetweenFactorPose2:
+        """Convert to GTSAM BetweenFactorPose2.
 
         Returns:
-            GTSAM BetweenFactorPose3.
+            GTSAM BetweenFactorPose2.
         """
-        # Extract rotation and translation from 4x4 matrix
-        R = self.relative_transform[:3, :3]
-        t = self.relative_transform[:3, 3]
+        # Extract x, y, theta from 3x3 SE(2) matrix
+        x = float(self.relative_transform[0, 2])
+        y = float(self.relative_transform[1, 2])
+        theta = float(np.arctan2(self.relative_transform[1, 0], self.relative_transform[0, 0]))
 
-        # Create GTSAM Pose3
-        rot = gtsam.Rot3(R)
-        point = gtsam.Point3(t[0], t[1], t[2])
-        relative_pose = gtsam.Pose3(rot, point)
+        relative_pose = gtsam.Pose2(x, y, theta)
 
         # Create noise model from information matrix
-        # Information matrix is inverse of covariance
         covariance = np.linalg.inv(self.information_matrix)
         noise_model = gtsam.noiseModel.Gaussian.Covariance(covariance)
 
@@ -66,25 +64,25 @@ class Edge:
         from_symbol = gtsam.symbol("x", self.from_node_id)
         to_symbol = gtsam.symbol("x", self.to_node_id)
 
-        return gtsam.BetweenFactorPose3(from_symbol, to_symbol, relative_pose, noise_model)
+        return gtsam.BetweenFactorPose2(from_symbol, to_symbol, relative_pose, noise_model)
 
     @staticmethod
     def from_poses(
         from_node_id: int,
         to_node_id: int,
-        from_pose: gtsam.Pose3,
-        to_pose: gtsam.Pose3,
+        from_pose: gtsam.Pose2,
+        to_pose: gtsam.Pose2,
         noise_sigmas: npt.NDArray[np.float64],
         edge_type: EdgeType = EdgeType.IMU,
     ) -> "Edge":
-        """Create an Edge from two GTSAM poses.
+        """Create an Edge from two GTSAM Pose2 objects.
 
         Args:
             from_node_id: Source node ID.
             to_node_id: Target node ID.
             from_pose: Source pose.
             to_pose: Target pose.
-            noise_sigmas: Standard deviations for the 6 DOF.
+            noise_sigmas: Standard deviations for the 3 DOF (x, y, theta).
             edge_type: Type of edge.
 
         Returns:
@@ -93,12 +91,16 @@ class Edge:
         # Compute relative transformation
         relative_pose = from_pose.between(to_pose)
 
-        # Convert to 4x4 matrix
-        R = relative_pose.rotation().matrix()
-        t = relative_pose.translation()
-        transform = np.eye(4)
-        transform[:3, :3] = R
-        transform[:3, 3] = t
+        # Convert to 3x3 SE(2) matrix
+        c, s = np.cos(relative_pose.theta()), np.sin(relative_pose.theta())
+        transform = np.array(
+            [
+                [c, -s, relative_pose.x()],
+                [s, c, relative_pose.y()],
+                [0, 0, 1],
+            ],
+            dtype=np.float64,
+        )
 
         # Create information matrix from sigmas
         information = np.diag(1.0 / (noise_sigmas**2))
@@ -115,10 +117,10 @@ class Edge:
 def create_between_factor(
     from_pose_id: int,
     to_pose_id: int,
-    relative_pose: gtsam.Pose3,
+    relative_pose: gtsam.Pose2,
     noise_model: gtsam.noiseModel.Base,
-) -> gtsam.BetweenFactorPose3:
-    """Create a GTSAM between factor.
+) -> gtsam.BetweenFactorPose2:
+    """Create a GTSAM between factor for Pose2.
 
     Args:
         from_pose_id: Source pose ID.
@@ -127,20 +129,20 @@ def create_between_factor(
         noise_model: Noise model.
 
     Returns:
-        GTSAM BetweenFactorPose3.
+        GTSAM BetweenFactorPose2.
     """
     from_symbol = gtsam.symbol("x", from_pose_id)
     to_symbol = gtsam.symbol("x", to_pose_id)
 
-    return gtsam.BetweenFactorPose3(from_symbol, to_symbol, relative_pose, noise_model)
+    return gtsam.BetweenFactorPose2(from_symbol, to_symbol, relative_pose, noise_model)
 
 
 def create_prior_factor(
     pose_id: int,
-    prior_pose: gtsam.Pose3,
+    prior_pose: gtsam.Pose2,
     noise_model: gtsam.noiseModel.Base,
-) -> gtsam.PriorFactorPose3:
-    """Create a GTSAM prior factor.
+) -> gtsam.PriorFactorPose2:
+    """Create a GTSAM prior factor for Pose2.
 
     Args:
         pose_id: Pose ID to constrain.
@@ -148,7 +150,7 @@ def create_prior_factor(
         noise_model: Noise model.
 
     Returns:
-        GTSAM PriorFactorPose3.
+        GTSAM PriorFactorPose2.
     """
     symbol = gtsam.symbol("x", pose_id)
-    return gtsam.PriorFactorPose3(symbol, prior_pose, noise_model)
+    return gtsam.PriorFactorPose2(symbol, prior_pose, noise_model)

@@ -142,3 +142,4 @@ Thumbs.db
 sat_cache/
 *.graphml
 **/*/log.txt
+results/

@@ -1,4 +1,8 @@
-"""IMU integration for odometry estimation using GTSAM."""
+"""IMU integration for 2D odometry estimation using GTSAM Pose2.
+
+This module integrates IMU measurements to estimate 2D pose changes (x, y, yaw)
+for vehicle trajectory estimation.
+"""
 
 import gtsam
 import numpy as np
@@ -6,118 +10,102 @@ import numpy.typing as npt
 
 from .data import IMUData
 
-# Constant for rotation threshold
-_ROTATION_EPSILON = 1e-8
-
 
 class IMUIntegrator:
-    """Integrates IMU measurements to estimate pose changes using GTSAM.
+    """Integrates IMU measurements to estimate 2D pose changes using GTSAM.
 
     Performs numerical integration of accelerometer and gyroscope data
-    to compute relative pose transformations compatible with GTSAM.
+    to compute relative pose transformations compatible with GTSAM Pose2.
+    Only x, y position and yaw angle are tracked for 2D vehicle trajectories.
     """
 
-    def __init__(self, gravity: npt.NDArray[np.float64]) -> None:
+    def __init__(self, gravity: float = 9.81) -> None:
         """Initialize IMU integrator.
 
         Args:
-            gravity: Gravity vector in world frame (typically [0, 0, -9.81]).
+            gravity: Magnitude of gravity (default 9.81 m/s^2).
+                     Used to remove gravity from vertical accelerometer readings.
         """
         self.gravity = gravity
-        self.position = np.zeros(3)
-        self.velocity = np.zeros(3)
-        self.orientation = np.eye(3)  # Rotation matrix
+        self.position = np.zeros(2)  # 2D position (x, y)
+        self.velocity = np.zeros(2)  # 2D velocity (vx, vy)
+        self.yaw = 0.0  # Yaw angle
 
     def integrate(
         self,
         imu_measurements: list[IMUData],
-        initial_orientation: npt.NDArray[np.float64],
-    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-        """Integrate IMU measurements.
+        initial_yaw: float = 0.0,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], float]:
+        """Integrate IMU measurements for 2D motion.
 
         Args:
             imu_measurements: List of IMU measurements to integrate.
-            initial_orientation: Initial orientation as rotation matrix.
+            initial_yaw: Initial yaw angle in radians.
 
         Returns:
-            Tuple of (position, velocity, orientation).
+            Tuple of (position [x, y], velocity [vx, vy], yaw).
         """
-        self.orientation = initial_orientation
-        self.position = np.zeros(3)
-        self.velocity = np.zeros(3)
+        self.yaw = initial_yaw
+        self.position = np.zeros(2)
+        self.velocity = np.zeros(2)
 
         for i in range(len(imu_measurements) - 1):
             dt = imu_measurements[i + 1].timestamp - imu_measurements[i].timestamp
             self._integrate_step(imu_measurements[i], dt)
 
-        return self.position, self.velocity, self.orientation
+        return self.position.copy(), self.velocity.copy(), self.yaw
 
     def integrate_to_gtsam_pose(
         self,
         imu_measurements: list[IMUData],
-        initial_pose: gtsam.Pose3,
-    ) -> gtsam.Pose3:
-        """Integrate IMU measurements and return GTSAM Pose3.
+        initial_pose: gtsam.Pose2,
+    ) -> gtsam.Pose2:
+        """Integrate IMU measurements and return GTSAM Pose2.
 
         Args:
             imu_measurements: List of IMU measurements to integrate.
-            initial_pose: Initial pose as GTSAM Pose3.
+            initial_pose: Initial pose as GTSAM Pose2.
 
         Returns:
-            Integrated pose as GTSAM Pose3.
+            Integrated pose as GTSAM Pose2.
         """
-        # Get initial orientation
-        initial_R = initial_pose.rotation().matrix()
-        initial_t = initial_pose.translation()
+        # Get initial state
+        initial_yaw = initial_pose.theta()
+        initial_position = np.array([initial_pose.x(), initial_pose.y()])
 
         # Integrate
-        position, _velocity, orientation = self.integrate(imu_measurements, initial_R)
+        delta_position, _velocity, final_yaw = self.integrate(imu_measurements, initial_yaw)
 
-        # Add initial position (initial_t is already a numpy array from translation())
-        final_position = initial_t + position
+        # Transform delta position from body frame to world frame
+        c, s = np.cos(initial_yaw), np.sin(initial_yaw)
+        R = np.array([[c, -s], [s, c]])
+        world_delta = R @ delta_position
 
-        # Create GTSAM Pose3
-        rot = gtsam.Rot3(orientation)
-        point = gtsam.Point3(final_position[0], final_position[1], final_position[2])
+        # Add to initial position
+        final_position = initial_position + world_delta
 
-        return gtsam.Pose3(rot, point)
+        return gtsam.Pose2(float(final_position[0]), float(final_position[1]), float(final_yaw))
 
     def _integrate_step(self, imu: IMUData, dt: float) -> None:
-        """Perform single integration step.
+        """Perform single integration step for 2D motion.
 
         Args:
             imu: IMU measurement.
             dt: Time step.
         """
-        # Integrate angular velocity to update orientation
-        omega = imu.angular_velocity
-        omega_norm = np.linalg.norm(omega)
+        # Integrate yaw from gyroscope z-axis (rotation around vertical)
+        omega_z = imu.angular_velocity[2]  # Yaw rate
+        self.yaw += omega_z * dt
 
-        if omega_norm > _ROTATION_EPSILON:
-            # Rodrigues' rotation formula
-            omega_skew = self._skew_symmetric(omega)
-            R_delta = (
-                np.eye(3)
-                + np.sin(omega_norm * dt) / omega_norm * omega_skew
-                + (1 - np.cos(omega_norm * dt)) / (omega_norm**2) * (omega_skew @ omega_skew)
-            )
-            self.orientation = self.orientation @ R_delta
+        # Get 2D acceleration in body frame (x forward, y left)
+        # Remove gravity effect from z-axis accelerometer (not needed for 2D)
+        accel_body = imu.linear_acceleration[:2]  # Only x, y
 
-        # Transform acceleration to world frame and remove gravity
-        # IMU measures specific force (includes gravity effect)
-        # To get true kinematic acceleration, subtract gravity
-        accel_world = self.orientation @ imu.linear_acceleration - self.gravity
+        # Transform to world frame using current yaw
+        c, s = np.cos(self.yaw), np.sin(self.yaw)
+        R = np.array([[c, -s], [s, c]])
+        accel_world = R @ accel_body
+
+        # Integrate velocity and position
         self.velocity += accel_world * dt
         self.position += self.velocity * dt + 0.5 * accel_world * dt**2
-
-    @staticmethod
-    def _skew_symmetric(v: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        """Create skew-symmetric matrix from vector.
-
-        Args:
-            v: 3D vector.
-
-        Returns:
-            3x3 skew-symmetric matrix.
-        """
-        return np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])

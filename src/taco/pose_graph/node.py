@@ -1,10 +1,10 @@
-"""Pose graph node representation using GTSAM.
+"""Pose graph node representation using GTSAM Pose2.
 
-This module provides helper classes for working with GTSAM Pose3 objects.
+This module provides helper classes for working with GTSAM Pose2 objects
+for 2D vehicle trajectory representation (x, y, yaw).
 """
 
 from dataclasses import dataclass
-from typing import Optional
 
 import gtsam
 import numpy as np
@@ -13,112 +13,73 @@ import numpy.typing as npt
 
 @dataclass
 class PoseNode:
-    """Represents a pose node for GTSAM integration.
+    """Represents a 2D pose node for GTSAM integration.
 
-    This is a convenience wrapper that can be converted to/from GTSAM Pose3.
+    This is a convenience wrapper that can be converted to/from GTSAM Pose2.
+    Stores position (x, y) and yaw angle for vehicle trajectory representation.
     """
 
-    position: npt.NDArray[np.float64]  # 3D position (x, y, z)
-    orientation: npt.NDArray[np.float64]  # Quaternion (w, x, y, z) or rotation matrix
+    position: npt.NDArray[np.float64]  # 2D position (x, y)
+    yaw: float  # Yaw angle in radians
     timestamp: float
-    covariance: npt.NDArray[np.float64] | None = None  # 6x6 covariance matrix
+    covariance: npt.NDArray[np.float64] | None = None  # 3x3 covariance matrix
 
     def __post_init__(self) -> None:
         """Validate node data."""
-        if self.position.shape != (3,):
-            raise ValueError("Position must be a 3D vector")
+        if self.position.shape != (2,):
+            raise ValueError("Position must be a 2D vector (x, y)")
 
-        # Check if orientation is quaternion or rotation matrix
-        if self.orientation.shape == (4,):
-            # Normalize quaternion
-            self.orientation = self.orientation / np.linalg.norm(self.orientation)
-        elif self.orientation.shape != (3, 3):
-            raise ValueError("Orientation must be quaternion (4,) or rotation matrix (3, 3)")
+        if self.covariance is not None and self.covariance.shape != (3, 3):
+            raise ValueError("Covariance must be a 3x3 matrix for Pose2")
 
-    def to_gtsam_pose(self) -> gtsam.Pose3:
-        """Convert to GTSAM Pose3.
+    def to_gtsam_pose(self) -> gtsam.Pose2:
+        """Convert to GTSAM Pose2.
 
         Returns:
-            GTSAM Pose3 object.
+            GTSAM Pose2 object.
         """
-        # Create GTSAM Rot3 from orientation
-        if self.orientation.shape == (4,):
-            # Use GTSAM's quaternion constructor (w, x, y, z order)
-            w, x, y, z = self.orientation
-            rot = gtsam.Rot3.Quaternion(float(w), float(x), float(y), float(z))
-        else:
-            # Ensure rotation matrix is contiguous and float64 for GTSAM
-            R = np.ascontiguousarray(self.orientation, dtype=np.float64)
-            rot = gtsam.Rot3(R)
-
-        # Create GTSAM Point3
-        point = gtsam.Point3(
-            float(self.position[0]), float(self.position[1]), float(self.position[2])
-        )
-
-        return gtsam.Pose3(rot, point)
+        return gtsam.Pose2(float(self.position[0]), float(self.position[1]), float(self.yaw))
 
     @staticmethod
     def from_gtsam_pose(
-        pose: gtsam.Pose3,
+        pose: gtsam.Pose2,
         timestamp: float,
         covariance: npt.NDArray[np.float64] | None = None,
     ) -> "PoseNode":
-        """Create PoseNode from GTSAM Pose3.
+        """Create PoseNode from GTSAM Pose2.
 
         Args:
-            pose: GTSAM Pose3 object.
+            pose: GTSAM Pose2 object.
             timestamp: Timestamp for the pose.
-            covariance: Optional 6x6 covariance matrix.
+            covariance: Optional 3x3 covariance matrix.
 
         Returns:
             PoseNode instance.
         """
-        position = pose.translation()
-        position_array = np.asarray(position)
-
-        rotation = pose.rotation().matrix()
+        position = np.array([pose.x(), pose.y()], dtype=np.float64)
+        yaw = pose.theta()
 
         return PoseNode(
-            position=position_array,
-            orientation=rotation,
+            position=position,
+            yaw=yaw,
             timestamp=timestamp,
             covariance=covariance,
-        )
-
-    @staticmethod
-    def _quaternion_to_rotation_matrix(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-        """Convert quaternion to rotation matrix.
-
-        Args:
-            q: Quaternion as [w, x, y, z].
-
-        Returns:
-            3x3 rotation matrix.
-        """
-        w, x, y, z = q
-        return np.array(
-            [
-                [1 - 2 * (y**2 + z**2), 2 * (x * y - w * z), 2 * (x * z + w * y)],
-                [2 * (x * y + w * z), 1 - 2 * (x**2 + z**2), 2 * (y * z - w * x)],
-                [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x**2 + y**2)],
-            ],
-            dtype=np.float64,
         )
 
 
 def create_noise_model_diagonal(
     sigmas: npt.NDArray[np.float64],
 ) -> gtsam.noiseModel.Diagonal:
-    """Create a diagonal noise model for GTSAM.
+    """Create a diagonal noise model from standard deviations.
 
     Args:
-        sigmas: Standard deviations for each dimension (6D for Pose3).
+        sigmas: Standard deviations for each dimension (3 for Pose2: x, y, theta).
 
     Returns:
         GTSAM diagonal noise model.
     """
-    return gtsam.noiseModel.Diagonal.Sigmas(sigmas)
+    vec = np.array([float(s) for s in sigmas], dtype=np.float64)
+    return gtsam.noiseModel.Diagonal.Sigmas(vec)
 
 
 def create_noise_model_gaussian(
@@ -127,7 +88,7 @@ def create_noise_model_gaussian(
     """Create a Gaussian noise model from covariance.
 
     Args:
-        covariance: Covariance matrix (6x6 for Pose3).
+        covariance: Covariance matrix (3x3 for Pose2).
 
     Returns:
         GTSAM Gaussian noise model.
@@ -139,7 +100,7 @@ def create_noise_model_isotropic(dim: int, sigma: float) -> gtsam.noiseModel.Iso
     """Create an isotropic noise model.
 
     Args:
-        dim: Dimension of the noise model.
+        dim: Dimension of the noise model (3 for Pose2).
         sigma: Standard deviation (same for all dimensions).
 
     Returns:

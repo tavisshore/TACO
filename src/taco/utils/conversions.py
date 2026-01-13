@@ -1,8 +1,67 @@
-"""Coordinate transformation utilities with GTSAM support."""
+"""Coordinate transformation utilities with GTSAM Pose2 support.
+
+This module provides utilities for working with 2D poses (x, y, yaw) using GTSAM Pose2.
+"""
 
 import gtsam
 import numpy as np
 import numpy.typing as npt
+
+
+def yaw_to_rotation_matrix(yaw: float) -> npt.NDArray[np.float64]:
+    """Convert yaw angle to 2D rotation matrix.
+
+    Args:
+        yaw: Yaw angle in radians.
+
+    Returns:
+        2x2 rotation matrix.
+    """
+    c, s = np.cos(yaw), np.sin(yaw)
+    return np.array([[c, -s], [s, c]], dtype=np.float64)
+
+
+def rotation_matrix_to_yaw(R: npt.NDArray[np.float64]) -> float:
+    """Extract yaw angle from rotation matrix.
+
+    Args:
+        R: 2x2 or 3x3 rotation matrix.
+
+    Returns:
+        Yaw angle in radians.
+    """
+    if R.shape in ((2, 2), (3, 3)):
+        return float(np.arctan2(R[1, 0], R[0, 0]))
+    raise ValueError("Rotation matrix must be 2x2 or 3x3")
+
+
+def quaternion_to_yaw(q: npt.NDArray[np.float64]) -> float:
+    """Extract yaw angle from quaternion.
+
+    Args:
+        q: Quaternion as [w, x, y, z].
+
+    Returns:
+        Yaw angle in radians.
+    """
+    q = q / np.linalg.norm(q)
+    w, x, y, z = q
+    # Yaw (rotation around z-axis)
+    siny_cosp = 2.0 * (w * z + x * y)
+    cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
+    return float(np.arctan2(siny_cosp, cosy_cosp))
+
+
+def yaw_to_quaternion(yaw: float) -> npt.NDArray[np.float64]:
+    """Convert yaw angle to quaternion (rotation around z-axis only).
+
+    Args:
+        yaw: Yaw angle in radians.
+
+    Returns:
+        Quaternion as [w, x, y, z].
+    """
+    return np.array([np.cos(yaw / 2), 0.0, 0.0, np.sin(yaw / 2)], dtype=np.float64)
 
 
 def quaternion_to_rotation_matrix(q: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -65,114 +124,98 @@ def rotation_matrix_to_quaternion(R: npt.NDArray[np.float64]) -> npt.NDArray[np.
     return np.array([w, x, y, z])
 
 
-def transform_to_pose(
+def transform_to_pose2d(
     T: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Extract position and orientation from transformation matrix.
+) -> tuple[npt.NDArray[np.float64], float]:
+    """Extract 2D position and yaw from transformation matrix.
 
     Args:
-        T: 4x4 transformation matrix.
+        T: 3x3 SE(2) transformation matrix.
 
     Returns:
-        Tuple of (position, quaternion).
+        Tuple of (position [x, y], yaw).
     """
-    position = T[:3, 3]
-    rotation = T[:3, :3]
-    quaternion = rotation_matrix_to_quaternion(rotation)
-
-    return position, quaternion
+    position = T[:2, 2]
+    yaw = rotation_matrix_to_yaw(T[:2, :2])
+    return position, yaw
 
 
-def pose_to_transform(
+def pose2d_to_transform(
     position: npt.NDArray[np.float64],
-    quaternion: npt.NDArray[np.float64],
+    yaw: float,
 ) -> npt.NDArray[np.float64]:
-    """Create transformation matrix from position and orientation.
+    """Create 3x3 SE(2) transformation matrix from 2D position and yaw.
 
     Args:
-        position: 3D position vector.
-        quaternion: Orientation as quaternion [w, x, y, z].
+        position: 2D position vector [x, y].
+        yaw: Yaw angle in radians.
 
     Returns:
-        4x4 transformation matrix.
+        3x3 SE(2) transformation matrix.
     """
-    T = np.eye(4)
-    T[:3, 3] = position
-    T[:3, :3] = quaternion_to_rotation_matrix(quaternion)
-
+    T = np.eye(3)
+    T[:2, :2] = yaw_to_rotation_matrix(yaw)
+    T[:2, 2] = position[:2]
     return T
 
 
-def gtsam_pose_to_transform(pose: gtsam.Pose3) -> npt.NDArray[np.float64]:
-    """Convert GTSAM Pose3 to 4x4 transformation matrix.
+def gtsam_pose2_to_transform(pose: gtsam.Pose2) -> npt.NDArray[np.float64]:
+    """Convert GTSAM Pose2 to 3x3 SE(2) transformation matrix.
 
     Args:
-        pose: GTSAM Pose3 object.
+        pose: GTSAM Pose2 object.
 
     Returns:
-        4x4 transformation matrix.
+        3x3 SE(2) transformation matrix.
     """
-    T = np.eye(4)
-    T[:3, :3] = pose.rotation().matrix()
-    T[:3, 3] = pose.translation()
+    T = np.eye(3)
+    T[:2, :2] = yaw_to_rotation_matrix(pose.theta())
+    T[0, 2] = pose.x()
+    T[1, 2] = pose.y()
     return T
 
 
-def transform_to_gtsam_pose(T: npt.NDArray[np.float64]) -> gtsam.Pose3:
-    """Convert 4x4 transformation matrix to GTSAM Pose3.
+def transform_to_gtsam_pose2(T: npt.NDArray[np.float64]) -> gtsam.Pose2:
+    """Convert 3x3 SE(2) transformation matrix to GTSAM Pose2.
 
     Args:
-        T: 4x4 transformation matrix.
+        T: 3x3 SE(2) transformation matrix.
 
     Returns:
-        GTSAM Pose3 object.
+        GTSAM Pose2 object.
     """
-    R = T[:3, :3]
-    t = T[:3, 3]
-
-    rot = gtsam.Rot3(R)
-    point = gtsam.Point3(t[0], t[1], t[2])
-
-    return gtsam.Pose3(rot, point)
+    x = float(T[0, 2])
+    y = float(T[1, 2])
+    yaw = rotation_matrix_to_yaw(T[:2, :2])
+    return gtsam.Pose2(x, y, yaw)
 
 
 def numpy_pose_to_gtsam(
     position: npt.NDArray[np.float64],
-    orientation: npt.NDArray[np.float64],
-) -> gtsam.Pose3:
-    """Convert numpy arrays to GTSAM Pose3.
+    yaw: float,
+) -> gtsam.Pose2:
+    """Convert numpy position and yaw to GTSAM Pose2.
 
     Args:
-        position: 3D position vector.
-        orientation: Quaternion [w, x, y, z] or 3x3 rotation matrix.
+        position: 2D position vector [x, y].
+        yaw: Yaw angle in radians.
 
     Returns:
-        GTSAM Pose3 object.
+        GTSAM Pose2 object.
     """
-    # Convert orientation to rotation matrix if needed
-    if orientation.shape == (4,):
-        R = quaternion_to_rotation_matrix(orientation)
-    else:
-        R = orientation
-
-    rot = gtsam.Rot3(R)
-    point = gtsam.Point3(position[0], position[1], position[2])
-
-    return gtsam.Pose3(rot, point)
+    return gtsam.Pose2(float(position[0]), float(position[1]), float(yaw))
 
 
-def gtsam_pose_to_numpy(
-    pose: gtsam.Pose3,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
-    """Convert GTSAM Pose3 to numpy arrays.
+def gtsam_pose2_to_numpy(
+    pose: gtsam.Pose2,
+) -> tuple[npt.NDArray[np.float64], float]:
+    """Convert GTSAM Pose2 to numpy arrays.
 
     Args:
-        pose: GTSAM Pose3 object.
+        pose: GTSAM Pose2 object.
 
     Returns:
-        Tuple of (position, rotation_matrix).
+        Tuple of (position [x, y], yaw).
     """
-    position_array = np.asarray(pose.translation())
-    rotation_matrix = pose.rotation().matrix()
-
-    return position_array, rotation_matrix
+    position = np.array([pose.x(), pose.y()], dtype=np.float64)
+    return position, pose.theta()
