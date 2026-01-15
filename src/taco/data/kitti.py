@@ -493,8 +493,10 @@ class Kitti:
 
         return {
             "dt": self.dt[start_frame:end_frame].unsqueeze(-1),
+            "dt_full": self.dt[:end_frame].unsqueeze(-1),
             "acc": self.acc[start_frame:end_frame],
             "gyro": self.gyro[start_frame:end_frame],
+            "gyro_full": self.gyro[:end_frame],
             "gt_pos": self.gt_pos[start_frame + 1 : end_frame + 1].unsqueeze(0),
             "gt_rot": self.gt_rot[start_frame + 1 : end_frame + 1],
             "gt_vel": self.gt_vel[start_frame + 1 : end_frame + 1],

@@ -20,7 +20,7 @@ from tqdm import tqdm
 
 from taco.data.kitti import Kitti
 from taco.pose_graph import PoseGraph, create_noise_model_diagonal
-from taco.sensors.imu import IMUData, IMUIntegrator
+from taco.sensors.imu import IMUData, IMUIntegrator, detect_corners_from_gyro
 from taco.utils.conversions import numpy_pose_to_gtsam, quaternion_to_yaw, rotation_matrix_to_yaw
 from taco.visualization import plot_trajectory
 
@@ -175,6 +175,8 @@ def main() -> None:
 
         # Get IMU data and integrate
         imu_data = data.get_imu(idx)
+        # Get corner detection first
+        turns = detect_corners_from_gyro(imu_data["gyro_full"][:, 2], imu_data["dt_full"])
 
         imu_predict = integrator(
             dt=imu_data["dt"],
@@ -258,6 +260,7 @@ def main() -> None:
         title=f"KITTI Sequence {args.sequence} - Ground Truth",
         show=False,
         convert_latlon=False,  # Data is already in meters
+        turns=turns,
     )
     fig1.savefig(output_dir / f"gt_trajectory_seq{args.sequence}.png", dpi=150)
     print(f"   Saved gt_trajectory_seq{args.sequence}.png")
@@ -270,6 +273,7 @@ def main() -> None:
             title=f"KITTI Sequence {args.sequence} - IMU Integrated",
             show=False,
             convert_latlon=False,  # Data is already in meters
+            turns=turns,
         )
         fig_imu.savefig(output_dir / f"imu_trajectory_seq{args.sequence}.png", dpi=150)
         print(f"   Saved imu_trajectory_seq{args.sequence}.png")
@@ -282,6 +286,7 @@ def main() -> None:
             title=f"KITTI Sequence {args.sequence} - Optimised",
             show=False,
             convert_latlon=False,  # Data is already in meters
+            turns=turns,
         )
         fig2.savefig(output_dir / f"optimised_trajectory_seq{args.sequence}.png", dpi=150)
         print(f"   Saved optimised_trajectory_seq{args.sequence}.png")

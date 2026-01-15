@@ -1,5 +1,9 @@
 """Plotting functions for 2D trajectory visualization with GTSAM Pose2 support."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import gtsam
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,6 +11,9 @@ import numpy.typing as npt
 from matplotlib.collections import LineCollection
 
 from ..pose_graph import PoseGraph
+
+if TYPE_CHECKING:
+    from ..sensors.imu.utils import TurnDetection
 
 
 def _convert_latlon_to_meters(
@@ -81,14 +88,21 @@ def plot_trajectory(
     title: str = "Trajectory",
     show: bool = True,
     convert_latlon: bool = True,
+    turns: TurnDetection | None = None,
+    turn_arrow_scale: float = 0.05,
 ) -> plt.Figure:
-    """Plot a 2D trajectory.
+    """Plot a 2D trajectory with optional turn detection markers.
 
     Args:
         positions: Nx2 array of positions (x, y) or (lon, lat).
         title: Plot title.
         show: Whether to display the plot.
         convert_latlon: If True, auto-detect and convert lat/lon to meters.
+        turns: Optional TurnDetection result to overlay turn markers.
+            Each detected turn apex will be marked with an arrow indicating
+            the turn direction and magnitude.
+        turn_arrow_scale: Scale factor for turn arrows relative to trajectory size.
+            Default 0.05 (5% of trajectory extent).
 
     Returns:
         Matplotlib figure.
@@ -105,10 +119,7 @@ def plot_trajectory(
         xlabel = "East (m)"
         ylabel = "North (m)"
 
-    # ax.plot(plot_positions[:, 0], plot_positions[:, 1], "b-", linewidth=2)
-    # ax.scatter(plot_positions[0, 0], plot_positions[0, 1], c="g", s=100, label="Start", zorder=5)
-    # ax.scatter(plot_positions[-1, 0], plot_positions[-1, 1], c="r", s=100, label="End", zorder=5)
-
+    # Plot trajectory as colored line segments
     x = plot_positions[:, 0]
     y = plot_positions[:, 1]
     points = np.array([x, y]).T.reshape(-1, 1, 2)
@@ -119,10 +130,78 @@ def plot_trajectory(
     ax.add_collection(lc)
     ax.autoscale()
 
+    # Plot turn detection markers if provided
+    if turns is not None and len(turns.apex_indices) > 0:
+        # Calculate arrow size based on trajectory scale
+        trajectory_scale = max(
+            plot_positions[:, 0].max() - plot_positions[:, 0].min(),
+            plot_positions[:, 1].max() - plot_positions[:, 1].min(),
+        )
+        base_arrow_length = trajectory_scale * turn_arrow_scale
+
+        for i, apex_idx in enumerate(turns.apex_indices):
+            if apex_idx >= len(plot_positions):
+                continue
+
+            # Get position at apex (the actual corner point)
+            apex_pos = plot_positions[apex_idx]
+
+            # Get exit heading (direction of travel after the turn) and turn direction
+            exit_heading = turns.turn_angles[i]
+            turn_dir = turns.turn_directions[i]
+
+            # Arrow points in the exit heading direction
+            arrow_length = base_arrow_length
+
+            # Calculate arrow endpoint based on exit heading
+            arrow_dx = arrow_length * np.cos(exit_heading)
+            arrow_dy = arrow_length * np.sin(exit_heading)
+
+            # Color based on turn direction (green=left, red=right)
+            color = "green" if turn_dir > 0 else "red"
+
+            # Draw arrow showing exit direction at apex
+            ax.annotate(
+                "",
+                xy=(apex_pos[0] + arrow_dx, apex_pos[1] + arrow_dy),
+                xytext=(apex_pos[0], apex_pos[1]),
+                arrowprops={
+                    "arrowstyle": "-|>",
+                    "color": color,
+                    "lw": 2,
+                    "mutation_scale": 15,
+                },
+                zorder=10,
+            )
+
+            # Mark apex point
+            ax.scatter(
+                apex_pos[0],
+                apex_pos[1],
+                c=color,
+                s=80,
+                marker="o",
+                edgecolors="black",
+                linewidths=1,
+                zorder=11,
+            )
+
+            # Add exit heading label (in degrees)
+            heading_deg = np.degrees(exit_heading)
+            ax.annotate(
+                f"{heading_deg:.0f}°",
+                xy=(apex_pos[0], apex_pos[1]),
+                xytext=(5, 5),
+                textcoords="offset points",
+                fontsize=8,
+                color=color,
+                fontweight="bold",
+                zorder=12,
+            )
+
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    # ax.legend()
     ax.grid(True)
     ax.set_aspect("equal")
 
