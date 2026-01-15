@@ -158,6 +158,7 @@ def main() -> None:
     print("\n3. Processing frames...")
     current_pose = initial_pose_gtsam
     current_pose_id = pose_id_0
+    num_turns = 0
 
     # Use length of gt_pos_meters to avoid index out of bounds
     num_frames = len(data.gt_pos_meters)
@@ -215,7 +216,9 @@ def main() -> None:
         graph.add_between_factor(current_pose_id, next_pose_id, relative_pose, odometry_noise)
 
         # GT from GPS
-        if idx % 50 == 0:
+        # NOTE: Replace with CVGL
+        if len(turns.exit_angles) > num_turns:
+            num_turns += 1
             # Create Pose2 from ground truth (x, y in meters, yaw)
             gt_pos_2d = np.array([gt_pos_meters[0], gt_pos_meters[1]])
             # Use current yaw estimate since GT doesn't provide it directly here
