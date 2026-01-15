@@ -122,7 +122,7 @@ def plot_trajectory(
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    ax.legend()
+    # ax.legend()
     ax.grid(True)
     ax.set_aspect("equal")
 
@@ -226,7 +226,7 @@ def plot_pose_graph(
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
     ax.set_title(title)
-    ax.legend()
+    # ax.legend()
     ax.grid(True)
     ax.set_aspect("equal")
 

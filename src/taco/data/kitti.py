@@ -504,10 +504,10 @@ class Kitti:
         }
 
     def imu_init_rot(self):
-        return self.yaws[0] * 2  # Right - why is it halved??
+        return self.yaws[0]  # * 2  # Right - why is it halved??
 
     def get_init_value(self):
-        return {"pos": self.gt_pos_meters[:1], "rot": self.gt_rot[:1], "vel": self.gt_vel[:1]}
+        return {"pos": self.gt_pos[:1], "rot": self.gt_rot[:1], "vel": self.gt_vel[:1]}
 
     def get_pos_meters(self, frame: int | None = None) -> np.ndarray:
         """Get position in meters (x, y) relative to start.

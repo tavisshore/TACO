@@ -4,9 +4,23 @@ This module integrates IMU measurements to estimate 2D pose changes (x, y, yaw)
 for vehicle trajectory estimation.
 """
 
+import argparse
+import os
+from datetime import datetime
+
 import gtsam
+import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
+import pykitti
+import pypose as pp
+import torch
+import torch.utils.data as Data
+import tqdm
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Ellipse
+from torch import nn
+from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 from .data import IMUData
 
@@ -108,4 +122,5 @@ class IMUIntegrator:
 
         # Integrate velocity and position
         self.velocity += accel_world * dt
+        self.position += self.velocity * dt + 0.5 * accel_world * dt**2
         self.position += self.velocity * dt + 0.5 * accel_world * dt**2

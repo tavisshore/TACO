@@ -15,6 +15,7 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+import pypose as pp
 from tqdm import tqdm
 
 from taco.data.kitti import Kitti
@@ -75,7 +76,7 @@ def create_imu_measurements_from_kitti(
         List of IMUData measurements.
     """
     imu_measurements = []
-
+    timestamp = 0.0
     for i in range(start_idx, end_idx):
         # Get raw IMU data from KITTI
         acc = kitti_data.acc[i].numpy()
@@ -123,8 +124,8 @@ def main() -> None:
 
     # Get initial pose from KITTI ground truth (already in meters)
     init_values = data.get_init_value()
-    init_pos = init_values["pos"][0].numpy()  # 2D position in meters (x, y)
-    init_rot = init_values["rot"][0].numpy()  # Rotation matrix or quaternion
+    init_pos = init_values["pos"][0].numpy()
+    init_rot = init_values["rot"][0].numpy()
 
     # Get 2D pose (x, y, yaw) - positions are already in meters
     init_pos_2d = np.array([init_pos[0], init_pos[1]])
@@ -145,7 +146,11 @@ def main() -> None:
     print(f"   Added initial pose (ID: {pose_id_0}) with prior")
 
     # Initialize IMU integrator
-    integrator = IMUIntegrator()
+    # integrator = IMUIntegrator()
+    integrator = pp.module.IMUPreintegrator(
+        init_values["pos"], init_values["rot"], init_values["vel"], reset=False
+    ).to("cpu")
+    imu_state = {"pos": init_values["pos"], "rot": init_values["rot"], "vel": init_values["vel"]}
 
     # Storage for trajectories (store as 2D in meters)
     trajectories = {
@@ -158,7 +163,6 @@ def main() -> None:
     print("\n3. Processing frames...")
     current_pose = initial_pose_gtsam
     current_pose_id = pose_id_0
-    imu_integration_window = 5  # Integrate every N frames
 
     # Use length of gt_pos_meters to avoid index out of bounds
     num_frames = len(data.gt_pos_meters)
@@ -170,47 +174,61 @@ def main() -> None:
         trajectories["gt"].append([gt_pos_meters[0], gt_pos_meters[1]])
 
         # Get IMU data and integrate
-        if idx >= imu_integration_window:
-            # Create IMU measurements for this window
-            imu_measurements = create_imu_measurements_from_kitti(
-                data, idx - imu_integration_window, idx
-            )
+        imu_data = data.get_imu(idx)
 
-            if len(imu_measurements) > 1:
-                # Integrate IMU to get next pose estimate
-                next_pose_gtsam = integrator.integrate_to_gtsam_pose(imu_measurements, current_pose)
+        imu_predict = integrator(
+            dt=imu_data["dt"],
+            gyro=imu_data["gyro"],
+            acc=imu_data["acc"],
+            rot=imu_data["init_rot"],
+            init_state=imu_state,
+        )
+        imu_state = {
+            "pos": imu_predict["pos"][..., -2, :],
+            "rot": imu_predict["rot"][..., -2, :],
+            "vel": imu_predict["vel"][..., -2, :],
+        }
+        # Extract 3D position and rotation from IMU prediction
+        next_pos_3d = imu_predict["pos"][..., -1, :].cpu().numpy()[0]
+        next_rot_quat = (
+            imu_predict["rot"][..., -1, :].cpu().numpy().flatten()
+        )  # pypose quaternion [x,y,z,w]
+        # Convert pypose quaternion [x,y,z,w] to [w,x,y,z] for our conversion function
+        quat_wxyz = np.array(
+            [next_rot_quat[3], next_rot_quat[0], next_rot_quat[1], next_rot_quat[2]]
+        )
+        next_yaw = quaternion_to_yaw(quat_wxyz)
+        # Create gtsam.Pose2 from x, y, yaw
+        next_pose_gtsam = numpy_pose_to_gtsam(next_pos_3d[:2], next_yaw)
+        # Store IMU trajectory (x, y from Pose2)
+        trajectories["imu"].append([next_pose_gtsam.x(), next_pose_gtsam.y()])
 
-                # Store IMU trajectory (x, y from Pose2)
-                trajectories["imu"].append([next_pose_gtsam.x(), next_pose_gtsam.y()])
+        # Add new pose to graph
+        # timestamp = idx * 0.1  # Approximate timestamp
+        next_pose_id = graph.add_pose_estimate(next_pose_gtsam, timestamp=timestamp)
 
-                # Add new pose to graph
-                # timestamp = idx * 0.1  # Approximate timestamp
-                next_pose_id = graph.add_pose_estimate(next_pose_gtsam, timestamp=timestamp)
+        # Add between factor (odometry constraint from IMU)
+        # Use high uncertainty since IMU integration drifts significantly
+        relative_pose = current_pose.between(next_pose_gtsam)
+        odometry_noise = create_noise_model_diagonal(
+            np.array([1.0, 1.0, 0.25])  # High uncertainty for x, y, theta
+        )
+        graph.add_between_factor(current_pose_id, next_pose_id, relative_pose, odometry_noise)
 
-                # Add between factor (odometry constraint from IMU)
-                # Use high uncertainty since IMU integration drifts significantly
-                relative_pose = current_pose.between(next_pose_gtsam)
-                odometry_noise = create_noise_model_diagonal(
-                    np.array([5.0, 5.0, 1.0])  # High uncertainty for x, y, theta
-                )
-                graph.add_between_factor(
-                    current_pose_id, next_pose_id, relative_pose, odometry_noise
-                )
+        # GT from GPS
+        if idx % 50 == 0:
+            # Create Pose2 from ground truth (x, y in meters, yaw)
+            gt_pos_2d = np.array([gt_pos_meters[0], gt_pos_meters[1]])
+            # Use current yaw estimate since GT doesn't provide it directly here
+            gt_yaw = next_pose_gtsam.theta()
+            gt_pose_gtsam = numpy_pose_to_gtsam(gt_pos_2d, gt_yaw)
+            # Use pose factor with low noise (high confidence) to anchor trajectory
+            pose_noise = create_noise_model_diagonal(np.array([0.1, 0.1, 0.05]))
+            graph.add_pose_factor(next_pose_id, gt_pose_gtsam, pose_noise)
 
-                # GT from GPS
-                # if idx % 5 == 0:
-                #     # Create Pose2 from ground truth (x, y in meters, yaw)
-                #     gt_pos_2d = np.array([gt_pos_meters[0], gt_pos_meters[1]])
-                #     # Use current yaw estimate since GT doesn't provide it directly here
-                #     gt_yaw = next_pose_gtsam.theta()
-                #     gt_pose_gtsam = numpy_pose_to_gtsam(gt_pos_2d, gt_yaw)
-                #     # Use pose factor with low noise (high confidence) to anchor trajectory
-                #     pose_noise = create_noise_model_diagonal(np.array([0.1, 0.1, 0.05]))
-                #     graph.add_pose_factor(next_pose_id, gt_pose_gtsam, pose_noise)
-
-                # Update current pose for next iteration
-                current_pose = next_pose_gtsam
-                current_pose_id = next_pose_id
+        # Update current pose for next iteration
+        current_pose = next_pose_gtsam
+        current_pose_id = next_pose_id
 
         # Increment frame counter
         data.frame_id += 1
