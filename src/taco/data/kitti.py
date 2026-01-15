@@ -173,7 +173,7 @@ RAW_DICT = {
     0: {
         "path": "raw_data/2011_10_03/2011_10_03_drive_0027_sync/oxts/data/",
         "start": 0,
-        "end": 4540,
+        "end": 1500,  # NOTE: 4540
         "date": "2011_10_03",
         "drive": "0027",
     },

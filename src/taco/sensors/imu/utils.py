@@ -22,7 +22,7 @@ class TurnDetection:
         start_indices: Indices where each turn begins.
         end_indices: Indices where each turn ends.
         turn_directions: Sign of each turn (+1 for left, -1 for right).
-        turn_angles: Exit heading after each turn in radians (relative to initial heading).
+        exit_angles: Exit heading after each turn in radians (relative to initial heading).
             This is the direction of travel after completing the turn.
     """
 
@@ -30,7 +30,8 @@ class TurnDetection:
     start_indices: npt.NDArray[np.int64]
     end_indices: npt.NDArray[np.int64]
     turn_directions: npt.NDArray[np.int64]
-    turn_angles: npt.NDArray[np.float64]
+    entry_angles: npt.NDArray[np.float64]
+    exit_angles: npt.NDArray[np.float64]
 
 
 def detect_corners_from_gyro(
@@ -81,7 +82,11 @@ def detect_corners_from_gyro(
     Returns:
         TurnDetection dataclass with apex, start, and end indices.
         - apex_indices: Frame indices of turn apexes (peak yaw rate)
-        - turn_angles: Absolute exit heading after each turn in world frame
+        - start_indices: Frame indices where each turn starts
+        - end_indices: Frame indices where each turn ends
+        - turn_directions: +1 for left turns, -1 for right turns
+        - entry_angles: Absolute entry heading before each turn in world frame
+        - exit_angles: Absolute exit heading after each turn in world frame
 
     Example:
         >>> # From KITTI data loader
@@ -152,7 +157,8 @@ def detect_corners_from_gyro(
     valid_starts = []
     valid_ends = []
     turn_directions = []
-    turn_angles = []
+    entry_angles = []
+    exit_angles = []
 
     for apex in apex_indices:
         # Find turn boundaries (used for validation, not for output index)
@@ -198,21 +204,24 @@ def detect_corners_from_gyro(
                 valid_starts[-1] = start
                 valid_ends[-1] = end
                 turn_directions[-1] = int(turn_sign)
-                turn_angles[-1] = exit_heading
+                entry_angles[-1] = absolute_heading[start]
+                exit_angles[-1] = exit_heading
             continue
 
         valid_apexes.append(apex)
         valid_starts.append(start)
         valid_ends.append(end)
         turn_directions.append(int(turn_sign))
-        turn_angles.append(exit_heading)
+        entry_angles.append(absolute_heading[start])
+        exit_angles.append(exit_heading)
 
     return TurnDetection(
         apex_indices=np.array(valid_apexes, dtype=np.int64),
         start_indices=np.array(valid_starts, dtype=np.int64),
         end_indices=np.array(valid_ends, dtype=np.int64),
         turn_directions=np.array(turn_directions, dtype=np.int64),
-        turn_angles=np.array(turn_angles, dtype=np.float64),
+        entry_angles=np.array(entry_angles, dtype=np.float64),
+        exit_angles=np.array(exit_angles, dtype=np.float64),
     )
 
 
@@ -371,7 +380,7 @@ def filter_close_corners(
             group_indices = list(range(i, group_end))
 
             if keep_strategy == "largest":
-                best = max(group_indices, key=lambda x: abs(turns.turn_angles[x]))
+                best = max(group_indices, key=lambda x: abs(turns.exit_angles[x]))
             elif keep_strategy == "first":
                 best = group_indices[0]
             elif keep_strategy == "last":
@@ -392,5 +401,5 @@ def filter_close_corners(
         start_indices=turns.start_indices[keep_mask],
         end_indices=turns.end_indices[keep_mask],
         turn_directions=turns.turn_directions[keep_mask],
-        turn_angles=turns.turn_angles[keep_mask],
+        exit_angles=turns.exit_angles[keep_mask],
     )

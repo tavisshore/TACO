@@ -174,7 +174,6 @@ def main() -> None:
         turns = detect_corners_from_gyro(
             imu_data["gyro_full"][:, 2], imu_data["dt_full"], initial_heading=init_yaw
         )
-        print([np.rad2deg(x) for x in turns.turn_angles])
 
         imu_predict = integrator(
             dt=imu_data["dt"],

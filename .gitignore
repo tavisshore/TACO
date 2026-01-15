@@ -143,3 +143,4 @@ sat_cache/
 *.graphml
 **/*/log.txt
 results/
+*.json

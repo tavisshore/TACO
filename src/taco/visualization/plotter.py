@@ -146,21 +146,29 @@ def plot_trajectory(
             # Get position at apex (the actual corner point)
             apex_pos = plot_positions[apex_idx]
 
+            entry_heading = turns.entry_angles[i]
+            arrow_dx_entry = base_arrow_length * np.cos(entry_heading)
+            arrow_dy_entry = base_arrow_length * np.sin(entry_heading)
+            color = "red"
+            # Arrow going into the corner
+            ax.annotate(
+                "",
+                xy=(apex_pos[0], apex_pos[1]),
+                xytext=(apex_pos[0] - arrow_dx_entry, apex_pos[1] - arrow_dy_entry),
+                arrowprops={
+                    "arrowstyle": "-|>",
+                    "color": color,
+                    "lw": 2,
+                    "mutation_scale": 15,
+                },
+                zorder=10,
+            )
+
             # Get exit heading (direction of travel after the turn) and turn direction
-            exit_heading = turns.turn_angles[i]
-            turn_dir = turns.turn_directions[i]
-
-            # Arrow points in the exit heading direction
-            arrow_length = base_arrow_length
-
-            # Calculate arrow endpoint based on exit heading
-            arrow_dx = arrow_length * np.cos(exit_heading)
-            arrow_dy = arrow_length * np.sin(exit_heading)
-
-            # Color based on turn direction (green=left, red=right)
-            color = "green" if turn_dir > 0 else "red"
-
-            # Draw arrow showing exit direction at apex
+            exit_heading = turns.exit_angles[i]
+            arrow_dx = base_arrow_length * np.cos(exit_heading)
+            arrow_dy = base_arrow_length * np.sin(exit_heading)
+            color = "green"
             ax.annotate(
                 "",
                 xy=(apex_pos[0] + arrow_dx, apex_pos[1] + arrow_dy),
@@ -186,18 +194,18 @@ def plot_trajectory(
                 zorder=11,
             )
 
-            # Add exit heading label (in degrees)
-            heading_deg = np.degrees(exit_heading)
-            ax.annotate(
-                f"{heading_deg:.0f}°",
-                xy=(apex_pos[0], apex_pos[1]),
-                xytext=(5, 5),
-                textcoords="offset points",
-                fontsize=8,
-                color=color,
-                fontweight="bold",
-                zorder=12,
-            )
+            # # Add exit heading label (in degrees)
+            # heading_deg = np.degrees(exit_heading)
+            # ax.annotate(
+            #     f"{heading_deg:.0f}°",
+            #     xy=(apex_pos[0], apex_pos[1]),
+            #     xytext=(5, 5),
+            #     textcoords="offset points",
+            #     fontsize=8,
+            #     color=color,
+            #     fontweight="bold",
+            #     zorder=12,
+            # )
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
