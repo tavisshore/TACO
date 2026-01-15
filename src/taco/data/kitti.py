@@ -360,10 +360,15 @@ class Kitti:
         )
 
         # IMU Values
+        self.gt_yaw = [self.data.oxts[i].packet.yaw for i in seq_range]
         self.gt_rot = pp.euler2SO3(
             torch.tensor(
                 [
-                    [self.data.oxts[i].packet.roll, self.data.oxts[i].packet.pitch, np.deg2rad(90)]
+                    [
+                        self.data.oxts[i].packet.roll,
+                        self.data.oxts[i].packet.pitch,
+                        self.data.oxts[i].packet.yaw,
+                    ]
                     for i in seq_range
                 ],
                 dtype=torch.float32,
@@ -509,7 +514,12 @@ class Kitti:
         return self.yaws[0]  # * 2  # Right - why is it halved??
 
     def get_init_value(self):
-        return {"pos": self.gt_pos[:1], "rot": self.gt_rot[:1], "vel": self.gt_vel[:1]}
+        return {
+            "pos": self.gt_pos[:1],
+            "rot": self.gt_rot[:1],
+            "yaw": self.gt_yaw[0],
+            "vel": self.gt_vel[:1],
+        }
 
     def get_pos_meters(self, frame: int | None = None) -> np.ndarray:
         """Get position in meters (x, y) relative to start.

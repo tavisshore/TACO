@@ -125,15 +125,10 @@ def main() -> None:
     # Get initial pose from KITTI ground truth (already in meters)
     init_values = data.get_init_value()
     init_pos = init_values["pos"][0].numpy()
-    init_rot = init_values["rot"][0].numpy()
+    init_yaw = init_values["yaw"]
 
     # Get 2D pose (x, y, yaw) - positions are already in meters
     init_pos_2d = np.array([init_pos[0], init_pos[1]])
-    if init_rot.shape == (3, 3):
-        init_yaw = rotation_matrix_to_yaw(init_rot)
-    else:
-        # If quaternion, extract yaw directly
-        init_yaw = quaternion_to_yaw(init_rot)
 
     initial_pose_gtsam = numpy_pose_to_gtsam(init_pos_2d, init_yaw)
 
@@ -176,7 +171,10 @@ def main() -> None:
         # Get IMU data and integrate
         imu_data = data.get_imu(idx)
         # Get corner detection first
-        turns = detect_corners_from_gyro(imu_data["gyro_full"][:, 2], imu_data["dt_full"])
+        turns = detect_corners_from_gyro(
+            imu_data["gyro_full"][:, 2], imu_data["dt_full"], initial_heading=init_yaw
+        )
+        print([np.rad2deg(x) for x in turns.turn_angles])
 
         imu_predict = integrator(
             dt=imu_data["dt"],
