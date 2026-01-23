@@ -388,10 +388,7 @@ def narrow_candidates_from_turns(
 def _get_all_node_positions(data) -> dict:
     """Get node positions from all available graphs."""
     all_nodes = {}
-    if hasattr(data, "raw_graph"):
-        for node, node_data in data.raw_graph.nodes(data=True):
-            all_nodes[node] = (node_data["x"], node_data["y"])
-    for node, node_data in data.original_graph.nodes(data=True):
+    for node, node_data in data.graph.nodes(data=True):
         if node not in all_nodes:
             all_nodes[node] = (node_data["x"], node_data["y"])
     return all_nodes
@@ -981,12 +978,12 @@ class Kitti:
                  if the edge was found in reverse direction (neighbor -> node).
         """
         # Try forward direction first (node -> neighbor)
-        if self.original_graph.has_edge(node, neighbor):
-            return (self.original_graph[node][neighbor], False)
+        if self.graph.has_edge(node, neighbor):
+            return (self.graph[node][neighbor], False)
 
         # Try reverse direction (neighbor -> node)
-        if self.original_graph.has_edge(neighbor, node):
-            return (self.original_graph[neighbor][node], True)
+        if self.graph.has_edge(neighbor, node):
+            return (self.graph[neighbor][node], True)
         return (None, False)
 
     def _extract_bearing_from_geometry(self, node, edge_data) -> float | None:
@@ -997,8 +994,6 @@ class Kitti:
             edge_data: The edge geometry data
             is_reversed: If True, the edge geometry is stored neighbor->node and needs reversal
         """
-        edge_data = edge_data[0]
-
         if not edge_data or "geometry" not in edge_data:
             return None
         geom = edge_data["geometry"]
@@ -1117,7 +1112,7 @@ class Kitti:
             fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_raw_graph.png", dpi=300)
             plt.close(fig)
 
-        self.graph = simplify_sharp_turns(g)
+        g = simplify_sharp_turns(g)
 
         self.graph = nx.Graph()
         for n in g.nodes(data=True):
