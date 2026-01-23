@@ -248,7 +248,7 @@ def simplify_sharp_turns(
     min_apex_vertex_gap: int = 1,
     inplace: bool = False,
     mark_apex_edges: bool = True,
-    update_raw_graph: bool = True,
+    update_raw_graph: bool = False,
 ) -> nx.MultiDiGraph:
     """
     Detects one or more sharp, sign-consistent turn runs inside each edge geometry.

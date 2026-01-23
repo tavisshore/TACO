@@ -399,9 +399,7 @@ def _get_all_node_positions(data) -> dict:
 
 def _prepare_positions_for_plotting(data, all_nodes: dict) -> dict:
     """Prepare node positions in the correct coordinate system for plotting."""
-    ox_pos = {
-        node: (data_pt["x"], data_pt["y"]) for node, data_pt in data.raw_graph.nodes(data=True)
-    }
+    ox_pos = {node: (data_pt["x"], data_pt["y"]) for node, data_pt in data.graph.nodes(data=True)}
     for node, coords in all_nodes.items():
         if node not in ox_pos:
             ox_pos[node] = coords
@@ -475,11 +473,7 @@ def _draw_candidate_arrows(
             continue
 
         node_x, node_y = pos[node_id]
-        yaws = (
-            data.raw_graph.nodes[node_id].get("yaws", {})
-            if data.raw_graph.has_node(node_id)
-            else {}
-        )
+        yaws = data.graph.nodes[node_id].get("yaws", {}) if data.graph.has_node(node_id) else {}
 
         if entry_neighbor in yaws:
             _draw_direction_arrow(
@@ -515,16 +509,21 @@ def plot_candidate_nodes(
 
     all_nodes = _get_all_node_positions(data)
 
-    fig, ax = ox.plot_graph(
-        data.raw_graph,
-        figsize=(14, 12),
-        bgcolor="#FFFFFF",
-        node_size=10,
-        node_color="#000000",
-        edge_color="#444444",
-        show=False,
-        close=False,
-    )
+    # fig, ax = ox.plot_graph(
+    #     data.raw_graph,
+    #     figsize=(14, 12),
+    #     bgcolor="#FFFFFF",
+    #     node_size=10,
+    #     node_color="#000000",
+    #     edge_color="#444444",
+    #     show=False,
+    #     close=False,
+    # )
+
+    fig, ax = plt.subplots(figsize=(12, 12))
+    pos = {node: (data["x"], data["y"]) for node, data in data.graph.nodes(data=True)}
+    nx.draw_networkx_edges(data.graph, pos, ax=ax, edge_color="gray", width=1)
+    nx.draw_networkx_nodes(data.graph, pos, ax=ax, node_color="red", node_size=10)
 
     pos = _prepare_positions_for_plotting(data, all_nodes)
     colors = plt.cm.tab10.colors
@@ -557,7 +556,7 @@ def plot_candidate_nodes(
             )
 
             nx.draw_networkx_nodes(
-                data.raw_graph,
+                data.graph,
                 pos,
                 nodelist=candidate_node_ids,
                 ax=ax,
@@ -582,7 +581,6 @@ def plot_candidate_nodes(
                 label=f"Turn {turn_idx + 1} ({len(candidate_node_ids)} candidates)\n"
                 f"Score range: {best_score_deg:.1f}° - {worst_score_deg:.1f}°",
             )
-
         _draw_candidate_arrows(ax, turn_candidates, node_data, pos, data, arrow_length)
 
     if frame_idx is not None:
@@ -1119,9 +1117,7 @@ class Kitti:
             fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_raw_graph.png", dpi=300)
             plt.close(fig)
 
-        self.raw_graph = g
-        g = simplify_sharp_turns(g, min_total_turn_deg=20)
-        self.original_graph = g
+        self.graph = simplify_sharp_turns(g)
 
         self.graph = nx.Graph()
         for n in g.nodes(data=True):
