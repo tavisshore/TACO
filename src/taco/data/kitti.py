@@ -399,7 +399,9 @@ def _get_all_node_positions(data) -> dict:
 
 def _prepare_positions_for_plotting(data, all_nodes: dict) -> dict:
     """Prepare node positions in the correct coordinate system for plotting."""
-    ox_pos = {node: (data_pt["x"], data_pt["y"]) for node, data_pt in data.graph.nodes(data=True)}
+    ox_pos = {
+        node: (data_pt["x"], data_pt["y"]) for node, data_pt in data.raw_graph.nodes(data=True)
+    }
     for node, coords in all_nodes.items():
         if node not in ox_pos:
             ox_pos[node] = coords
@@ -473,7 +475,11 @@ def _draw_candidate_arrows(
             continue
 
         node_x, node_y = pos[node_id]
-        yaws = data.graph.nodes[node_id].get("yaws", {}) if data.graph.has_node(node_id) else {}
+        yaws = (
+            data.raw_graph.nodes[node_id].get("yaws", {})
+            if data.raw_graph.has_node(node_id)
+            else {}
+        )
 
         if entry_neighbor in yaws:
             _draw_direction_arrow(
@@ -980,22 +986,14 @@ class Kitti:
         Returns: tuple of (edge_data, is_reversed) where is_reversed indicates
                  if the edge was found in reverse direction (neighbor -> node).
         """
-        # For original graph without inserted nodes
-        if node in self.original_graph.nodes and neighbor in self.original_graph.nodes:
-            if self.original_graph.has_edge(node, neighbor):
-                return self.original_graph[node][neighbor]
+        # Try forward direction first (node -> neighbor)
+        if self.original_graph.has_edge(node, neighbor):
+            return (self.original_graph[node][neighbor], False)
 
-            if self.original_graph.has_edge(neighbor, node):
-                return self.original_graph[neighbor][node]
-
-        if node in self.graph.nodes and neighbor in self.graph.nodes:
-            if self.graph.has_edge(node, neighbor):
-                return self.graph[node][neighbor]
-
-            if self.graph.has_edge(neighbor, node):
-                return self.graph[neighbor][node]
-
-        return None
+        # Try reverse direction (neighbor -> node)
+        if self.original_graph.has_edge(neighbor, node):
+            return (self.original_graph[neighbor][node], True)
+        return (None, False)
 
     def _extract_bearing_from_geometry(self, node, edge_data) -> float | None:
         """Extract bearing from edge geometry using the first segment from the node.
@@ -1005,7 +1003,7 @@ class Kitti:
             edge_data: The edge geometry data
             is_reversed: If True, the edge geometry is stored neighbor->node and needs reversal
         """
-        edge_data = edge_data[0] if isinstance(edge_data, list) else edge_data
+        edge_data = edge_data[0]
 
         if not edge_data or "geometry" not in edge_data:
             return None
@@ -1049,12 +1047,8 @@ class Kitti:
     def _calculate_node_bearing(self, node, neighbor) -> float:
         """Calculate bearing from node to neighbor."""
         node_lat, node_lon = self.graph.nodes[node]["y"], self.graph.nodes[node]["x"]
-
-        # TODO REE here
-        edge_data = self._get_edge_data_for_bearing(node, neighbor)
-
+        edge_data, is_reversed = self._get_edge_data_for_bearing(node, neighbor)
         bearing = self._extract_bearing_from_geometry(node, edge_data)
-
         if bearing is None:
             neighbor_lat = self.graph.nodes[neighbor]["y"]
             neighbor_lon = self.graph.nodes[neighbor]["x"]
@@ -1129,9 +1123,9 @@ class Kitti:
             fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_raw_graph.png", dpi=300)
             plt.close(fig)
 
-        self.original_graph = g.copy()
-
-        g = simplify_sharp_turns(g)
+        self.raw_graph = g
+        g = simplify_sharp_turns(g, min_total_turn_deg=20)
+        self.original_graph = g
 
         self.graph = nx.Graph()
         for n in g.nodes(data=True):
