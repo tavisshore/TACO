@@ -977,33 +977,74 @@ class Kitti:
         return self.gt_pos_meters[idx].numpy()
 
     def _get_edge_data_for_bearing(self, node, neighbor):
-        """Get edge data from original_graph or raw_graph."""
-        if self.original_graph.has_edge(node, neighbor):
-            return self.original_graph[node][neighbor]
-        if self.raw_graph.has_edge(node, neighbor):
-            for key in self.raw_graph[node][neighbor]:
-                return self.raw_graph[node][neighbor][key]
-        return None
+        """Get edge data from original_graph.
 
-    def _extract_bearing_from_geometry(self, edge_data) -> float | None:
-        """Extract bearing from edge geometry."""
+        Returns: tuple of (edge_data, is_reversed) where is_reversed indicates
+                 if the edge was found in reverse direction (neighbor -> node).
+        """
+        # Try forward direction first (node -> neighbor)
+        if self.original_graph.has_edge(node, neighbor):
+            return (self.original_graph[node][neighbor], False)
+
+        # Try reverse direction (neighbor -> node)
+        if self.original_graph.has_edge(neighbor, node):
+            return (self.original_graph[neighbor][node], True)
+        return (None, False)
+
+    def _extract_bearing_from_geometry(self, node, edge_data) -> float | None:
+        """Extract bearing from edge geometry using the first segment from the node.
+
+        Args:
+            node: The node we're calculating bearing from
+            edge_data: The edge geometry data
+            is_reversed: If True, the edge geometry is stored neighbor->node and needs reversal
+        """
+        edge_data = edge_data[0]
+
         if not edge_data or "geometry" not in edge_data:
             return None
         geom = edge_data["geometry"]
+
         if not hasattr(geom, "coords"):
             return None
         coords = list(geom.coords)
         if len(coords) < 2:
             return None
-        lat1, lon1 = coords[0][1], coords[0][0]
-        lat2, lon2 = coords[1][1], coords[1][0]
-        return calculate_bearing(lat1, lon1, lat2, lon2)
+
+        # Get node position
+        node_lat, node_lon = self.graph.nodes[node]["y"], self.graph.nodes[node]["x"]
+
+        # Find which end of the geometry is closest to our node
+        first_point = coords[0]
+        last_point = coords[-1]
+        dist_to_first = (node_lon - first_point[0]) ** 2 + (node_lat - first_point[1]) ** 2
+        dist_to_last = (node_lon - last_point[0]) ** 2 + (node_lat - last_point[1]) ** 2
+
+        # If node is closer to the end, reverse coords so node is at the start
+        if dist_to_last < dist_to_first:
+            coords = coords[::-1]
+
+        if len(coords) > 2:
+            # Find the first segment that is at least 3 meters long # Optimise
+            accumulated_length = 0.0
+            for i in range(1, len(coords)):
+                pt1 = coords[i - 1]
+                pt2 = coords[i]
+                segment_length = haversine((pt1[1], pt1[0]), (pt2[1], pt2[0]), unit=Unit.METERS)
+                accumulated_length += segment_length
+                if accumulated_length >= 3.0:
+                    next_point_lat, next_point_lon = pt2[1], pt2[0]
+                    return calculate_bearing(node_lat, node_lon, next_point_lat, next_point_lon)
+
+        # Now node is always at coords[0], use bearing from node to coords[1]
+        next_point_lat, next_point_lon = coords[1][1], coords[1][0]
+        return calculate_bearing(node_lat, node_lon, next_point_lat, next_point_lon)
 
     def _calculate_node_bearing(self, node, neighbor) -> float:
         """Calculate bearing from node to neighbor."""
         node_lat, node_lon = self.graph.nodes[node]["y"], self.graph.nodes[node]["x"]
-        edge_data = self._get_edge_data_for_bearing(node, neighbor)
-        bearing = self._extract_bearing_from_geometry(edge_data)
+        edge_data, is_reversed = self._get_edge_data_for_bearing(node, neighbor)
+        bearing = self._extract_bearing_from_geometry(node, edge_data)
         if bearing is None:
             neighbor_lat = self.graph.nodes[neighbor]["y"]
             neighbor_lon = self.graph.nodes[neighbor]["x"]
