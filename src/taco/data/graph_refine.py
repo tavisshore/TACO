@@ -1,67 +1,335 @@
 """Graph refinement utilities for road network processing."""
 
-import math
-from typing import Any
+from __future__ import annotations
 
+import math
+import uuid
+from copy import deepcopy
+from itertools import pairwise
+from typing import List, Optional, Tuple
+
+import geopandas as gpd
 import networkx as nx
 import numpy as np
+import osmnx as ox
+import pandas as pd
+from shapely.geometry import LineString, MultiLineString, Point
 
 
-def simplify_sharp_turns(graph: nx.MultiDiGraph, angle_threshold: float = 30.0) -> nx.MultiDiGraph:
-    """Simplify graph by removing nodes at sharp turns.
+def _edge_length(ls: LineString) -> float:
+    # Length in coordinate units. If your graph is projected (meters), great.
+    # If lat/lon, you'll get degrees. Replace with geodesic if you need meters.
+    return float(ls.length)
 
-    This function processes a road network graph and merges nodes
-    where the turn angle exceeds a threshold, creating smoother paths.
+
+def _wrap180(deg: float) -> float:
+    """Wrap angle to (-180, 180]."""
+    x = (deg + 180.0) % 360.0 - 180.0
+    # Map -180 to +180 for consistency
+    return 180.0 if np.isclose(x, -180.0) else x
+
+
+def _segment_headings(coords: List[Tuple[float, float]]) -> np.ndarray:
+    vecs = np.diff(np.asarray(coords, dtype=float), axis=0)
+    headings = np.degrees(np.arctan2(vecs[:, 1], vecs[:, 0]))
+    return headings  # length = n_seg
+
+
+def _turn_deltas(headings: np.ndarray) -> np.ndarray:
+    deltas = np.diff(headings)
+    wrapped = np.vectorize(_wrap180)(deltas)
+    return wrapped  # length = n_seg-1, each at an interior vertex
+
+
+def _new_node_id(G: nx.Graph):
+    # Try to keep node id type consistent if nodes are integers
+    try:
+        ints = [
+            int(n) for n in G.nodes if isinstance(n, int | np.integer | str) and str(n).isdigit()
+        ]
+        if len(ints) == G.number_of_nodes():
+            return max(ints) + 1
+    except Exception:
+        pass
+    return f"apex_{uuid.uuid4().hex[:8]}"
+
+
+def _line_intersection(p1, p2, p3, p4) -> Tuple[float, float] | None:
+    """
+    Calculate intersection point of two lines.
+    Line 1: p1 -> p2
+    Line 2: p3 -> p4
+    Returns the intersection point or None if lines are parallel.
+    """
+    x1, y1 = p1
+    x2, y2 = p2
+    x3, y3 = p3
+    x4, y4 = p4
+
+    denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+    if abs(denom) < 1e-10:  # Lines are parallel
+        return None
+
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+
+    x = x1 + t * (x2 - x1)
+    y = y1 + t * (y2 - y1)
+
+    return (x, y)
+
+
+def _as_linestring(data) -> LineString | None:
+    geom = data.get("geometry", None)
+    if geom is None:
+        return None
+    if isinstance(geom, LineString):
+        return geom
+    if isinstance(geom, MultiLineString):
+        # flatten into one by concatenating parts
+        coords = []
+        for i, part in enumerate(geom.geoms):
+            if i == 0:
+                coords.extend(list(part.coords))
+            else:
+                # avoid duplicating the joint node
+                part_coords = list(part.coords)
+                if coords and part_coords and coords[-1] == part_coords[0]:
+                    coords.extend(part_coords[1:])
+                else:
+                    coords.extend(part_coords)
+        return LineString(coords)
+    return None
+
+
+def _edge_coords(u, v, data, G: nx.MultiDiGraph) -> List[Tuple[float, float]]:
+    ls = _as_linestring(data)
+    if ls is not None:
+        # drop duplicate consecutive points
+        coords = list(ls.coords)
+        dedup = [coords[0]]
+        for p in coords[1:]:
+            if p != dedup[-1]:
+                dedup.append(p)
+        return dedup
+    # fallback: straight line u->v from node positions
+    ux, uy = G.nodes[u]["x"], G.nodes[u]["y"]
+    vx, vy = G.nodes[v]["x"], G.nodes[v]["y"]
+    return [(ux, uy), (vx, vy)]
+
+
+def _group_turn_runs(idxs: np.ndarray, signs: np.ndarray) -> List[Tuple[int, int, float]]:
+    """Group consecutive significant deltas into runs of the same sign."""
+    groups = []
+    run_start = idxs[0]
+    run_sign = signs[0]
+    prev_i = idxs[0]
+    for k in range(1, len(idxs)):
+        i = idxs[k]
+        s = signs[k]
+        contiguous = i == prev_i + 1
+        same_sign = s == run_sign
+        if not (contiguous and same_sign):
+            groups.append((run_start, prev_i, run_sign))
+            run_start = i
+            run_sign = s
+        prev_i = i
+    groups.append((run_start, prev_i, run_sign))
+    return groups
+
+
+def _find_apex_indices(
+    groups: List[Tuple[int, int, float]], deltas: np.ndarray, min_total_turn_deg: float
+) -> Tuple[List[int], List[float]]:
+    """For each run, check cumulative turn and pick apex (global delta index)."""
+    apex_delta_indices = []
+    apex_turns_abs = []
+    for start, end, _ in groups:
+        run_slice = deltas[start : end + 1]
+        total_signed = np.sum(run_slice)
+        if abs(total_signed) >= min_total_turn_deg:
+            local_apex = int(np.argmax(np.abs(run_slice)))
+            apex_idx = start + local_apex
+            apex_delta_indices.append(apex_idx)
+            apex_turns_abs.append(abs(total_signed))
+    return apex_delta_indices, apex_turns_abs
+
+
+def _merge_close_apexes(
+    apex_delta_indices: List[int], apex_turns_abs: List[float], min_apex_vertex_gap: int
+) -> List[int]:
+    """Merge apexes that are too close (by vertex index distance)."""
+    apex_pairs = sorted(zip(apex_delta_indices, apex_turns_abs, strict=False), key=lambda x: x[0])
+    merged = []
+    for idx, turn_abs in apex_pairs:
+        if not merged:
+            merged.append([idx, turn_abs])
+            continue
+        last_idx, last_turn = merged[-1]
+        if idx - last_idx <= min_apex_vertex_gap:
+            if turn_abs > last_turn:
+                merged[-1] = [idx, turn_abs]
+        else:
+            merged.append([idx, turn_abs])
+    return [m[0] for m in merged]
+
+
+def _calculate_apex_position(
+    apex_idx: int, groups: List[Tuple[int, int, float]], coords: List[Tuple[float, float]]
+) -> Tuple[float, float]:
+    """Calculate proper apex position as intersection of incoming/outgoing lines."""
+    run_start_idx: int | None = None
+    run_end_idx: int | None = None
+    for start, end, _ in groups:
+        if start <= apex_idx <= end:
+            run_start_idx = start
+            run_end_idx = end
+            break
+
+    if run_start_idx is None or run_end_idx is None:
+        return coords[apex_idx + 1]
+
+    incoming_p1_idx = run_start_idx
+    incoming_p2_idx = run_start_idx + 1
+    outgoing_p1_idx = run_end_idx + 1
+    outgoing_p2_idx = run_end_idx + 2
+
+    if (
+        incoming_p1_idx < 0
+        or incoming_p2_idx >= len(coords)
+        or outgoing_p1_idx >= len(coords)
+        or outgoing_p2_idx >= len(coords)
+    ):
+        return coords[apex_idx + 1]
+
+    p1_in = coords[incoming_p1_idx]
+    p2_in = coords[incoming_p2_idx]
+    p1_out = coords[outgoing_p1_idx]
+    p2_out = coords[outgoing_p2_idx]
+
+    intersection = _line_intersection(p1_in, p2_in, p1_out, p2_out)
+    return intersection if intersection is not None else coords[apex_idx + 1]
+
+
+def _split_geometry_at_apexes(
+    coords: List[Tuple[float, float]],
+    apex_coord_indices: List[int],
+    apex_points: List[Tuple[float, float]],
+    chain_nodes: List,
+    node_xy: dict,
+) -> List[LineString]:
+    """Split the original edge geometry at apex points."""
+    chain_geoms = []
+    split_indices = [0, *apex_coord_indices, len(coords) - 1]
+
+    for i in range(len(split_indices) - 1):
+        start_idx = split_indices[i]
+        end_idx = split_indices[i + 1]
+
+        segment_coords = coords[start_idx : end_idx + 1].copy()
+
+        if i > 0:
+            segment_coords[0] = apex_points[i - 1]
+        if i < len(apex_points):
+            segment_coords[-1] = apex_points[i]
+
+        if len(segment_coords) >= 2:
+            chain_geoms.append(LineString(segment_coords))
+        else:
+            chain_geoms.append(LineString([node_xy[chain_nodes[i]], node_xy[chain_nodes[i + 1]]]))
+
+    return chain_geoms
+
+
+def simplify_sharp_turns(
+    G: nx.MultiDiGraph,
+    *,
+    min_total_turn_deg: float = 30.0,
+    min_segment_turn_deg: float = 3.0,
+    min_apex_vertex_gap: int = 1,
+    inplace: bool = False,
+    mark_apex_edges: bool = True,
+    update_raw_graph: bool = True,
+) -> nx.MultiDiGraph:
+    """
+    Detects one or more sharp, sign-consistent turn runs inside each edge geometry.
+    For every qualifying run, inserts a node at the run's apex (max |delta|) and
+    replaces the edge with multiple straight segments (u -> apex1 -> apex2 -> ... -> v).
 
     Args:
-        graph: NetworkX MultiDiGraph representing road network.
-        angle_threshold: Minimum angle (degrees) to consider a turn sharp.
+        G: Input MultiDiGraph.
+        min_total_turn_deg: Minimum cumulative turn angle to detect a corner.
+        min_segment_turn_deg: Minimum per-segment turn to consider significant.
+        min_apex_vertex_gap: Minimum vertex gap between detected apexes.
+        inplace: If True, modify G in place.
+        mark_apex_edges: If True, mark created edges with 'apex_simplified' attribute.
+        update_raw_graph: If True, also add apex nodes to the raw graph with split geometries.
 
     Returns:
-        Simplified graph with sharp turn nodes removed.
+        Modified graph with apex nodes inserted at sharp turns.
     """
-    # Work on a copy to avoid modifying the original
-    g = graph.copy()
+    H = G if inplace else G.copy()
+    edges = list(H.edges(keys=True, data=True))
 
-    # Find nodes with exactly 2 edges (potential simplification candidates)
-    nodes_to_check = [node for node in g.nodes() if g.degree(node) == 2]
-
-    nodes_to_remove = []
-
-    for node in nodes_to_check:
-        # Get neighboring nodes
-        neighbors = list(g.neighbors(node))
-        if len(neighbors) != 2:
+    for u, v, key, data in edges:
+        coords = _edge_coords(u, v, data, H)
+        if len(coords) < 3:
             continue
 
-        n1, n2 = neighbors
+        headings = _segment_headings(coords)
+        deltas = _turn_deltas(headings)
 
-        # Get node positions
-        try:
-            node_pos = (g.nodes[node]["y"], g.nodes[node]["x"])
-            n1_pos = (g.nodes[n1]["y"], g.nodes[n1]["x"])
-            n2_pos = (g.nodes[n2]["y"], g.nodes[n2]["x"])
-        except KeyError:
+        mask = np.abs(deltas) >= min_segment_turn_deg
+        if not np.any(mask):
             continue
 
-        # Calculate angle at this node
-        angle = calculate_turn_angle(n1_pos, node_pos, n2_pos)
+        idxs = np.nonzero(mask)[0]
+        signs = np.sign(deltas[mask])
 
-        # If angle is close to 180 (straight), this node can be simplified
-        if abs(180 - angle) < angle_threshold:
-            nodes_to_remove.append(node)
+        groups = _group_turn_runs(idxs, signs)
+        apex_delta_indices, apex_turns_abs = _find_apex_indices(groups, deltas, min_total_turn_deg)
 
-    # Remove nodes and reconnect edges
-    for node in nodes_to_remove:
-        neighbors = list(g.neighbors(node))
-        if len(neighbors) == 2:
-            n1, n2 = neighbors
-            # Add direct edge between neighbors
-            if not g.has_edge(n1, n2):
-                g.add_edge(n1, n2)
-            g.remove_node(node)
+        if not apex_delta_indices:
+            continue
 
-    return g
+        apex_delta_indices = _merge_close_apexes(
+            apex_delta_indices, apex_turns_abs, min_apex_vertex_gap
+        )
+        apex_coord_indices = [i + 1 for i in apex_delta_indices]
+
+        apex_points = [
+            _calculate_apex_position(apex_idx, groups, coords) for apex_idx in apex_delta_indices
+        ]
+
+        created_nodes = []
+        for pt in apex_points:
+            node_id = _new_node_id(H)
+            H.add_node(node_id, x=float(pt[0]), y=float(pt[1]))
+            created_nodes.append(node_id)
+
+        chain_nodes = [u, *created_nodes, v]
+        node_xy = {n: (H.nodes[n]["x"], H.nodes[n]["y"]) for n in chain_nodes}
+
+        chain_geoms = []
+        if update_raw_graph and len(created_nodes) > 0 and len(coords) > 2:
+            chain_geoms = _split_geometry_at_apexes(
+                coords, apex_coord_indices, apex_points, chain_nodes, node_xy
+            )
+
+        H.remove_edge(u, v, key)
+
+        base_attrs = {k: val for k, val in data.items() if k != "geometry"}
+        if mark_apex_edges:
+            base_attrs["apex_simplified"] = True
+            base_attrs["apex_count"] = len(created_nodes)
+
+        for i, (a, b) in enumerate(pairwise(chain_nodes)):
+            attrs = dict(base_attrs)
+            geom = chain_geoms[i] if i < len(chain_geoms) else LineString([node_xy[a], node_xy[b]])
+            attrs["geometry"] = geom
+            attrs["length"] = _edge_length(geom)
+            H.add_edge(a, b, **attrs)
+
+    return H
 
 
 def calculate_turn_angle(p1: tuple, p2: tuple, p3: tuple) -> float:

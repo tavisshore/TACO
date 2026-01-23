@@ -11,92 +11,18 @@ This example demonstrates:
 The pose graph uses Pose2 (x, y, yaw) for 2D vehicle trajectory estimation.
 """
 
-import argparse
 from pathlib import Path
 
 import numpy as np
 import pypose as pp
 from tqdm import tqdm
 
-from taco.data.kitti import Kitti
+from taco import parse_args
+from taco.data.kitti import Kitti, narrow_candidates_from_turns
 from taco.pose_graph import PoseGraph, create_noise_model_diagonal
-from taco.sensors.imu import IMUData, IMUIntegrator, detect_corners_from_gyro
-from taco.utils.conversions import numpy_pose_to_gtsam, quaternion_to_yaw, rotation_matrix_to_yaw
+from taco.sensors.imu import detect_corners_from_gyro
+from taco.utils.conversions import numpy_pose_to_gtsam, quaternion_to_yaw
 from taco.visualization import plot_trajectory
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="TACO Full Pipeline Example")
-    parser.add_argument(
-        "-d",
-        "--data_path",
-        default="/scratch/datasets/KITTI/odometry/dataset/sequences_jpg",
-        help="Path to KITTI dataset",
-    )
-    parser.add_argument(
-        "-s",
-        "--sequence",
-        type=int,
-        default=0,
-        help="KITTI sequence to evaluate (0-10)",
-    )
-    parser.add_argument(
-        "-p",
-        "--pose_path",
-        default="/scratch/datasets/KITTI/odometry/dataset/poses",
-        help="Path to ground truth poses",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed",
-    )
-    parser.add_argument(
-        "--output_dir",
-        type=str,
-        default="results",
-        help="Output directory for results",
-    )
-    return parser.parse_args()
-
-
-def create_imu_measurements_from_kitti(
-    kitti_data: Kitti, start_idx: int, end_idx: int
-) -> list[IMUData]:
-    """Convert KITTI IMU data to TACO IMUData format.
-
-    Args:
-        kitti_data: KITTI data loader instance.
-        start_idx: Start frame index.
-        end_idx: End frame index.
-
-    Returns:
-        List of IMUData measurements.
-    """
-    imu_measurements = []
-    timestamp = 0.0
-    for i in range(start_idx, end_idx):
-        # Get raw IMU data from KITTI
-        acc = kitti_data.acc[i].numpy()
-        gyro = kitti_data.gyro[i].numpy()
-
-        # Create timestamp (cumulative from start)
-        timestamp = sum(kitti_data.dt[start_idx:i].numpy()) if i > start_idx else 0.0
-
-        imu = IMUData.from_raw(
-            timestamp=timestamp,
-            accel_x=acc[0],
-            accel_y=acc[1],
-            accel_z=acc[2],
-            gyro_x=gyro[0],
-            gyro_y=gyro[1],
-            gyro_z=gyro[2],
-        )
-        imu_measurements.append(imu)
-
-    return imu_measurements
 
 
 def main() -> None:
@@ -141,7 +67,6 @@ def main() -> None:
     print(f"   Added initial pose (ID: {pose_id_0}) with prior")
 
     # Initialize IMU integrator
-    # integrator = IMUIntegrator()
     integrator = pp.module.IMUPreintegrator(
         init_values["pos"], init_values["rot"], init_values["vel"], reset=False
     ).to("cpu")
@@ -173,7 +98,9 @@ def main() -> None:
         imu_data = data.get_imu(idx)
         # Get corner detection first
         turns = detect_corners_from_gyro(
-            imu_data["gyro_full"][:, 2], imu_data["dt_full"], initial_heading=init_yaw
+            imu_data["gyro_full"][:, 2],
+            imu_data["dt_full"],
+            initial_heading=init_yaw,
         )
 
         imu_predict = integrator(
@@ -217,16 +144,29 @@ def main() -> None:
 
         # GT from GPS
         # NOTE: Replace with CVGL
-        if len(turns.exit_angles) > num_turns:
+        if len(turns.entry_angles) > num_turns:
             num_turns += 1
-            # Create Pose2 from ground truth (x, y in meters, yaw)
+
+            candidate_nodes = narrow_candidates_from_turns(
+                data=data,
+                turns=turns,
+                angle_tolerance=np.deg2rad(25),  # radians
+                verbose=True,
+                output_path=output_dir / f"frame_{len(turns.entry_angles)}.jpg",
+                frame_idx=idx,
+            )
+
+            # TODO: CVGL
+            if len(candidate_nodes) == 0:
+                continue
+
+            # LEAVE IN GPS GT
             gt_pos_2d = np.array([gt_pos_meters[0], gt_pos_meters[1]])
-            # Use current yaw estimate since GT doesn't provide it directly here
             gt_yaw = next_pose_gtsam.theta()
             gt_pose_gtsam = numpy_pose_to_gtsam(gt_pos_2d, gt_yaw)
-            # Use pose factor with low noise (high confidence) to anchor trajectory
             pose_noise = create_noise_model_diagonal(np.array([0.1, 0.1, 0.05]))
             graph.add_pose_factor(next_pose_id, gt_pose_gtsam, pose_noise)
+            # End of GT from GPS
 
         # Update current pose for next iteration
         current_pose = next_pose_gtsam

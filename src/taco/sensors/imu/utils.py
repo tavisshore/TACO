@@ -29,7 +29,6 @@ class TurnDetection:
     apex_indices: npt.NDArray[np.int64]
     start_indices: npt.NDArray[np.int64]
     end_indices: npt.NDArray[np.int64]
-    turn_directions: npt.NDArray[np.int64]
     entry_angles: npt.NDArray[np.float64]
     exit_angles: npt.NDArray[np.float64]
 
@@ -47,7 +46,8 @@ def detect_corners_from_gyro(
     edge_hold_samples: int = 3,
     sign_consistency: float = 0.65,
     peak_prominence: float = 0.05,
-    exit_heading_lookahead: int = 5,
+    exit_heading_lookahead: int = 20,
+    turn_latency: int = 25,
 ) -> TurnDetection:
     """Detect corner apexes directly from gyroscope yaw rate measurements.
 
@@ -130,10 +130,14 @@ def detect_corners_from_gyro(
         prominence=peak_prominence,
     )
 
+    # If apex_indices is within 10 of the end, remove it (incomplete turn)
+    apex_indices = apex_indices[apex_indices < n - turn_latency]
+
     # Integrate yaw rate to get cumulative heading (relative to start)
     cumulative_yaw = np.zeros(n)
     for i in range(1, n):
-        cumulative_yaw[i] = cumulative_yaw[i - 1] + yaw_rate_smooth[i] * dt_arr[i]
+        # Gyro z is positive for left turns, so subtract to get heading
+        cumulative_yaw[i] = cumulative_yaw[i - 1] - yaw_rate_smooth[i] * dt_arr[i]
 
     # Add initial heading to get absolute world heading
     absolute_heading = cumulative_yaw + initial_heading
@@ -156,7 +160,6 @@ def detect_corners_from_gyro(
     valid_apexes = []
     valid_starts = []
     valid_ends = []
-    turn_directions = []
     entry_angles = []
     exit_angles = []
 
@@ -203,7 +206,6 @@ def detect_corners_from_gyro(
                 valid_apexes[-1] = apex
                 valid_starts[-1] = start
                 valid_ends[-1] = end
-                turn_directions[-1] = int(turn_sign)
                 entry_angles[-1] = absolute_heading[start]
                 exit_angles[-1] = exit_heading
             continue
@@ -211,7 +213,6 @@ def detect_corners_from_gyro(
         valid_apexes.append(apex)
         valid_starts.append(start)
         valid_ends.append(end)
-        turn_directions.append(int(turn_sign))
         entry_angles.append(absolute_heading[start])
         exit_angles.append(exit_heading)
 
@@ -219,7 +220,6 @@ def detect_corners_from_gyro(
         apex_indices=np.array(valid_apexes, dtype=np.int64),
         start_indices=np.array(valid_starts, dtype=np.int64),
         end_indices=np.array(valid_ends, dtype=np.int64),
-        turn_directions=np.array(turn_directions, dtype=np.int64),
         entry_angles=np.array(entry_angles, dtype=np.float64),
         exit_angles=np.array(exit_angles, dtype=np.float64),
     )

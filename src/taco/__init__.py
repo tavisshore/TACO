@@ -8,3 +8,7 @@ data with CVGL (Computer Vision Global Localization) image-based measurements fo
 __version__ = "0.1.0"
 
 __all__ = ["__version__"]
+
+from taco.utils.config import parse_args
+
+__all__.extend(["parse_args"])

@@ -39,6 +39,8 @@ def _convert_latlon_to_meters(
     # Earth radius in meters
     earth_radius = 6371000.0
 
+    print(positions.shape)
+
     # Convert to radians
     lat_rad = np.radians(positions[:, 1])
     lon_rad = np.radians(positions[:, 0])
@@ -146,36 +148,43 @@ def plot_trajectory(
             # Get position at apex (the actual corner point)
             apex_pos = plot_positions[apex_idx]
 
-            entry_heading = turns.entry_angles[i]
-            arrow_dx_entry = base_arrow_length * np.cos(entry_heading)
-            arrow_dy_entry = base_arrow_length * np.sin(entry_heading)
-            color = "red"
-            # Arrow going into the corner
+            # Convert compass bearing (N=0, clockwise) to math angle (E=0, counter-clockwise)
+            # Compass: 0°=N, 90°=E, 180°=S, 270°=W
+            # Math: 0°=E, 90°=N, 180°=W, 270°=S
+            # Conversion: math_angle = 90° - compass_angle
+            entry_compass = turns.entry_angles[i]
+            entry_math = np.pi / 2 - entry_compass
+            arrow_dx_entry = base_arrow_length * np.cos(entry_math)
+            arrow_dy_entry = base_arrow_length * np.sin(entry_math)
+
+            # Arrow going into the corner (red)
             ax.annotate(
                 "",
                 xy=(apex_pos[0], apex_pos[1]),
                 xytext=(apex_pos[0] - arrow_dx_entry, apex_pos[1] - arrow_dy_entry),
                 arrowprops={
                     "arrowstyle": "-|>",
-                    "color": color,
+                    "color": "blue",
                     "lw": 2,
                     "mutation_scale": 15,
                 },
                 zorder=10,
             )
 
-            # Get exit heading (direction of travel after the turn) and turn direction
-            exit_heading = turns.exit_angles[i]
-            arrow_dx = base_arrow_length * np.cos(exit_heading)
-            arrow_dy = base_arrow_length * np.sin(exit_heading)
-            color = "green"
+            # Get exit heading (direction of travel after the turn)
+            exit_compass = turns.exit_angles[i]
+            exit_math = np.pi / 2 - exit_compass
+            arrow_dx = base_arrow_length * np.cos(exit_math)
+            arrow_dy = base_arrow_length * np.sin(exit_math)
+
+            # Arrow going out of the corner (green)
             ax.annotate(
                 "",
                 xy=(apex_pos[0] + arrow_dx, apex_pos[1] + arrow_dy),
                 xytext=(apex_pos[0], apex_pos[1]),
                 arrowprops={
                     "arrowstyle": "-|>",
-                    "color": color,
+                    "color": "red",
                     "lw": 2,
                     "mutation_scale": 15,
                 },
@@ -186,26 +195,35 @@ def plot_trajectory(
             ax.scatter(
                 apex_pos[0],
                 apex_pos[1],
-                c=color,
-                s=80,
+                c="orange",
+                s=100,
                 marker="o",
                 edgecolors="black",
-                linewidths=1,
+                linewidths=1.5,
                 zorder=11,
             )
 
-            # # Add exit heading label (in degrees)
-            # heading_deg = np.degrees(exit_heading)
-            # ax.annotate(
-            #     f"{heading_deg:.0f}°",
-            #     xy=(apex_pos[0], apex_pos[1]),
-            #     xytext=(5, 5),
-            #     textcoords="offset points",
-            #     fontsize=8,
-            #     color=color,
-            #     fontweight="bold",
-            #     zorder=12,
-            # )
+            # Calculate turn angle (signed)
+            turn_angle = (exit_compass - entry_compass + np.pi) % (2 * np.pi) - np.pi
+            turn_deg = np.degrees(turn_angle)
+
+            # Add turn angle label
+            ax.annotate(
+                f"{turn_deg:.0f}°",
+                xy=(apex_pos[0], apex_pos[1]),
+                xytext=(8, 8),
+                textcoords="offset points",
+                fontsize=9,
+                color="black",
+                fontweight="bold",
+                bbox={
+                    "boxstyle": "round,pad=0.3",
+                    "facecolor": "white",
+                    "edgecolor": "black",
+                    "alpha": 0.8,
+                },
+                zorder=12,
+            )
 
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)

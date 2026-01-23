@@ -34,10 +34,12 @@ try:
 except ImportError:
     streetview = None
 
-from ..utils.geometry import rotate_trajectory
-from .camera_model import CameraModel
-from .graph_refine import simplify_sharp_turns
-from .sat import download_satmap
+from taco.data.camera_model import CameraModel
+from taco.data.graph_refine import simplify_sharp_turns
+from taco.data.sat import download_satmap
+from taco.sensors.imu import TurnDetection
+from taco.utils.geometry import rotate_trajectory
+from taco.visualization.plotter import _convert_latlon_to_meters
 
 
 def latlon_to_local_meters(
@@ -142,30 +144,475 @@ def calculate_bearing(lat1, lon1, lat2, lon2):
 
 
 def calculate_bearings(graph):
-    # Calculate exit edges from each node
+    """Calculate exit bearings from each node to its neighbors.
+
+    For each edge, calculates the bearing (direction) when leaving from each end.
+    Uses edge geometry if available with >2 points, otherwise uses direct node positions.
+
+    Args:
+        graph: NetworkX graph with node positions (x=lon, y=lat) and optional edge geometry.
+
+    Returns:
+        Dict mapping node -> {neighbor: bearing_in_radians}.
+    """
     edge_angles = {}
-    for u, v, data in graph.edges(keys=False, data=True):
-        if u not in edge_angles:
-            edge_angles[u] = {}
-        if v not in edge_angles:
-            edge_angles[v] = {}
-        # Edge - direction one
-        lat1, lon1 = graph.nodes[u]["y"], graph.nodes[u]["x"]
-        if "geometry" in data:
-            lon2, lat2 = list(data["geometry"].coords)[1]  # 1st vertex after start
-        else:
-            lat2, lon2 = graph.nodes[v]["y"], graph.nodes[v]["x"]
-        bear = calculate_bearing(lat1, lon1, lat2, lon2)
-        edge_angles[u][v] = bear
-        # Other end
-        lat1, lon1 = graph.nodes[v]["y"], graph.nodes[v]["x"]
-        if "geometry" in data:
-            lon2, lat2 = list(data["geometry"].coords)[-2]  # Last vertex
-        else:
-            lat2, lon2 = graph.nodes[u]["y"], graph.nodes[u]["x"]
-        bear = calculate_bearing(lat1, lon1, lat2, lon2)
-        edge_angles[v][u] = bear
+
+    for u in graph.nodes:
+        edge_angles[u] = {}
+
+        # Get node u position
+        u_lat, u_lon = graph.nodes[u]["y"], graph.nodes[u]["x"]
+
+        for v in graph.neighbors(u):
+            # Get node v position
+            v_lat, v_lon = graph.nodes[v]["y"], graph.nodes[v]["x"]
+
+            # Bearing from u to v using node coordinates only
+            edge_angles[u][v] = calculate_bearing(u_lat, u_lon, v_lat, v_lon)
+
     return edge_angles
+
+
+def angle_difference(angle1: float, angle2: float) -> float:
+    """Compute the absolute angular difference between two angles in radians.
+
+    Handles wrap-around correctly (e.g., 0.1 rad and 6.2 rad are ~0.18 rad apart).
+
+    Args:
+        angle1: First angle in radians.
+        angle2: Second angle in radians.
+
+    Returns:
+        Absolute angular difference in [0, π].
+    """
+    diff = (angle1 - angle2 + np.pi) % (2 * np.pi) - np.pi
+    return abs(diff)
+
+
+def find_matching_node_turns(
+    graph: nx.Graph,
+    entry_angle: float,
+    exit_angle: float,
+    angle_tolerance: float = 0.35,
+) -> list[tuple[int, int, int, float]]:
+    """Find graph nodes where a turn with given entry/exit angles is possible.
+
+    For a turn to match at a node, there must exist:
+    - An incoming edge whose bearing matches the entry_angle (reversed, since we
+      arrive FROM that direction)
+    - An outgoing edge whose bearing matches the exit_angle
+
+    Args:
+        graph: NetworkX graph with 'yaws' attribute on nodes containing
+            {neighbor_id: bearing_angle} for each edge.
+        entry_angle: Heading when entering the turn (absolute, in radians).
+        exit_angle: Heading when exiting the turn (absolute, in radians).
+        angle_tolerance: Maximum angular difference (radians) to consider a match.
+            Default 0.35 rad (~20 degrees).
+
+    Returns:
+        List of (node_id, entry_neighbor, exit_neighbor, score) tuples for matching nodes.
+        Score is the combined angular error (lower is better).
+    """
+
+    matches = []
+
+    for node in graph.nodes():
+        yaws = graph.nodes[node].get("yaws", {})
+        if len(yaws) < 2:
+            # Need at least 2 edges for a turn
+            continue
+
+        # For each possible (entry_edge, exit_edge) combination
+        for entry_neighbor, entry_bearing in yaws.items():
+            incoming_heading = (entry_bearing + np.pi) % (2 * np.pi)
+            entry_error = angle_difference(incoming_heading, entry_angle)
+
+            if entry_error > angle_tolerance:
+                continue
+
+            for exit_neighbor, exit_bearing in yaws.items():
+                if exit_neighbor == entry_neighbor:
+                    continue  # Can't exit the way we came
+
+                exit_error = angle_difference(exit_bearing, exit_angle)
+
+                if exit_error > angle_tolerance:
+                    continue
+
+                # Combined angular error as score (lower is better)
+                score = entry_error + exit_error
+                matches.append((node, entry_neighbor, exit_neighbor, score))
+
+    return matches
+
+
+def narrow_candidates_by_turn_sequence(
+    data,
+    turns: TurnDetection,
+    angle_tolerance: float = 0.35,
+    connectivity_check: bool = True,
+    max_path_length: int = 10,
+) -> list[list[tuple[int, int, int, float]]]:
+    """Narrow down candidate nodes using a sequence of detected turns.
+
+    Given a sequence of turns (entry/exit angle pairs), finds graph nodes that
+    could correspond to each turn. Optionally filters by connectivity (each
+    successive turn node must be reachable from the previous one in the direction
+    of the previous exit angle).
+
+    Args:
+        graph: NetworkX graph with 'yaws' attribute on nodes.
+        turns: TurnDetection object with entry_angles and exit_angles arrays.
+        angle_tolerance: Maximum angular difference for a match (radians).
+        connectivity_check: If True, filter candidates to only include nodes
+            reachable from the previous turn's candidates in the direction of
+            the previous exit angle.
+        max_path_length: Maximum path length to search for connectivity (default 10).
+
+    Returns:
+        List of candidate lists, one per turn. Each candidate list contains
+        (node_id, entry_neighbor, exit_neighbor, score) tuples.
+        Score is the combined angular error (lower is better).
+    """
+    if len(turns.entry_angles) != len(turns.exit_angles):
+        raise ValueError("entry_angles and exit_angles must have same length")
+
+    graph = data.graph
+
+    all_candidates = []
+
+    for i, (entry, exit_) in enumerate(zip(turns.entry_angles, turns.exit_angles, strict=True)):
+        candidates = find_matching_node_turns(graph, entry, exit_, angle_tolerance)
+
+        if connectivity_check and i > 0 and all_candidates[i - 1]:
+            # Get previous turn information
+            prev_candidates = all_candidates[i - 1]
+            prev_exit_angle = turns.exit_angles[i - 1]
+
+            # Build a set of reachable nodes from previous turn exits
+            # Only consider paths that generally follow the exit angle direction
+            reachable_nodes = set()
+
+            for _, _, prev_exit_neighbor, _ in prev_candidates:
+                # Start from the exit neighbor of the previous turn
+                # Use BFS to find nodes reachable within max_path_length
+                visited = {prev_exit_neighbor}
+                queue = [(prev_exit_neighbor, 0)]  # (node, depth)
+
+                while queue:
+                    current_node, depth = queue.pop(0)
+
+                    if depth >= max_path_length:
+                        continue
+
+                    reachable_nodes.add(current_node)
+
+                    # Explore neighbors that are roughly in the direction of prev_exit_angle
+                    current_yaws = graph.nodes[current_node].get("yaws", {})
+                    for neighbor, bearing in current_yaws.items():
+                        if neighbor not in visited:
+                            # Check if this edge is roughly aligned with the exit direction
+                            angle_diff = angle_difference(bearing, prev_exit_angle)
+                            # Allow edges within ~90 degrees of the exit direction
+                            if angle_diff < np.pi / 2:
+                                visited.add(neighbor)
+                                queue.append((neighbor, depth + 1))
+
+            # Filter candidates to those reachable in the exit direction
+            reachable_candidates = []
+            for cand in candidates:
+                node_id, entry_neighbor, _exit_neighbor, _score = cand
+                # Check if the candidate node or its entry neighbor is reachable
+                if node_id in reachable_nodes or entry_neighbor in reachable_nodes:
+                    reachable_candidates.append(cand)
+
+            candidates = reachable_candidates
+
+        all_candidates.append(candidates)
+
+    return all_candidates
+
+
+def narrow_candidates_from_turns(
+    data: Kitti,
+    turns: TurnDetection,
+    angle_tolerance: float = np.deg2rad(30),  # radians
+    connectivity_check: bool = True,
+    verbose: bool = False,
+    output_path: str | Path | None = None,
+    frame_idx: int | None = None,
+) -> list[list[tuple[int, int, int, float]]]:
+    """Convenience wrapper to narrow candidates using TurnDetection result.
+
+    Args:
+        data: Kitti data instance with graph attribute.
+        turns: TurnDetection dataclass with entry_angles and exit_angles.
+        angle_tolerance: Maximum angular difference for a match (radians).
+        connectivity_check: If True, filter by connectivity between successive turns.
+        verbose: If True, save a matplotlib visualization of candidate nodes.
+        output_path: Path to save the visualization. Defaults to 'candidate_nodes.png'.
+        frame_idx: Frame index for getting ground truth node position.
+
+    Returns:
+        List of candidate lists, one per turn. Each candidate is a tuple of
+        (node_id, entry_neighbor, exit_neighbor, score) where score is the
+        combined angular error (lower is better).
+
+    Example:
+        >>> from taco.sensors.imu import detect_corners_from_kitti
+        >>> turns = detect_corners_from_kitti(kitti_data)
+        >>> candidates = narrow_candidates_from_turns(kitti_data, turns, verbose=True)
+        >>> # candidates[i] contains possible nodes for turn i
+        >>> for i, cands in enumerate(candidates):
+        ...     print(f"Turn {i}: {len(cands)} candidate nodes")
+        ...     # Sort by score to get best matches
+        ...     sorted_cands = sorted(cands, key=lambda x: x[3])
+        ...     if sorted_cands:
+        ...         best = sorted_cands[0]
+        ...         print(f"  Best match: node {best[0]} with score {best[3]:.3f} rad")
+    """
+    candidates = narrow_candidates_by_turn_sequence(
+        data,
+        turns,
+        angle_tolerance=angle_tolerance,
+        connectivity_check=connectivity_check,
+    )
+
+    if verbose:
+        plot_candidate_nodes(data, candidates, output_path, frame_idx=frame_idx)
+
+    return candidates
+
+
+def _get_all_node_positions(data) -> dict:
+    """Get node positions from all available graphs."""
+    all_nodes = {}
+    if hasattr(data, "raw_graph"):
+        for node, node_data in data.raw_graph.nodes(data=True):
+            all_nodes[node] = (node_data["x"], node_data["y"])
+    for node, node_data in data.original_graph.nodes(data=True):
+        if node not in all_nodes:
+            all_nodes[node] = (node_data["x"], node_data["y"])
+    return all_nodes
+
+
+def _prepare_positions_for_plotting(data, all_nodes: dict) -> dict:
+    """Prepare node positions in the correct coordinate system for plotting."""
+    ox_pos = {
+        node: (data_pt["x"], data_pt["y"]) for node, data_pt in data.raw_graph.nodes(data=True)
+    }
+    for node, coords in all_nodes.items():
+        if node not in ox_pos:
+            ox_pos[node] = coords
+    return ox_pos
+
+
+def _compute_node_colors_and_sizes(
+    candidate_node_ids: list, node_scores: dict, color
+) -> tuple[list, list]:
+    """Compute node colors and sizes based on scores."""
+    scores = list(node_scores.values())
+    min_score = min(scores)
+    max_score = max(scores)
+    score_range = max_score - min_score if max_score > min_score else 1.0
+
+    node_colors = []
+    node_sizes = []
+    for node_id in candidate_node_ids:
+        score = node_scores[node_id]
+        normalized = (score - min_score) / score_range
+        brightness = 1.0 - (normalized * 0.7)
+        base_color = np.array(plt.cm.colors.to_rgb(color))
+        bright_color = base_color * brightness + (1 - brightness) * 0.2
+        node_colors.append(bright_color)
+        node_sizes.append(200 - normalized * 100)
+    return node_colors, node_sizes
+
+
+def _draw_direction_arrow(
+    ax,
+    node_x: float,
+    node_y: float,
+    bearing: float,
+    arrow_length: float,
+    color: str,
+    reverse: bool = False,
+):
+    """Draw a single direction arrow at a node."""
+    if reverse:
+        bearing = bearing + np.pi
+    math_angle = np.pi / 2 - bearing
+    dx = arrow_length * np.cos(math_angle)
+    dy = arrow_length * np.sin(math_angle)
+
+    if reverse:
+        ax.annotate(
+            "",
+            xy=(node_x, node_y),
+            xytext=(node_x - dx, node_y - dy),
+            arrowprops={"arrowstyle": "->", "color": color, "lw": 1.5, "alpha": 0.7},
+            zorder=10,
+        )
+    else:
+        ax.annotate(
+            "",
+            xy=(node_x + dx, node_y + dy),
+            xytext=(node_x, node_y),
+            arrowprops={"arrowstyle": "->", "color": color, "lw": 1.5, "alpha": 0.7},
+            zorder=10,
+        )
+
+
+def _draw_candidate_arrows(
+    ax, turn_candidates: list, node_data: dict, pos: dict, data, arrow_length: float
+):
+    """Draw entry/exit arrows for all candidates."""
+    for node_id, entry_neighbor, exit_neighbor, score in turn_candidates:
+        if node_id not in pos:
+            continue
+        if node_data[node_id][2] != score:
+            continue
+
+        node_x, node_y = pos[node_id]
+        yaws = (
+            data.raw_graph.nodes[node_id].get("yaws", {})
+            if data.raw_graph.has_node(node_id)
+            else {}
+        )
+
+        if entry_neighbor in yaws:
+            _draw_direction_arrow(
+                ax, node_x, node_y, yaws[entry_neighbor], arrow_length, "blue", reverse=True
+            )
+
+        if exit_neighbor in yaws:
+            _draw_direction_arrow(
+                ax, node_x, node_y, yaws[exit_neighbor], arrow_length, "red", reverse=False
+            )
+
+
+def plot_candidate_nodes(
+    data,  # Kitti instance
+    candidates: list[list[tuple[int, int, int, float]]],
+    output_path: str | Path | None = None,
+    frame_idx: int | None = None,
+) -> None:
+    """Plot the graph with candidate nodes highlighted for each turn.
+
+    Only plots candidates that are present after connectivity filtering,
+    showing the connected sequence of turn candidates. Node colors indicate
+    their score (angular error), with better matches being brighter.
+
+    Args:
+        data: Kitti data instance with graph attribute.
+        candidates: List of candidate lists from narrow_candidates_by_turn_sequence.
+            Each candidate is (node_id, entry_neighbor, exit_neighbor, score).
+        output_path: Path to save the figure. Defaults to 'candidate_nodes.png'.
+        frame_idx: Frame index for getting ground truth node position.
+    """
+    output_path = Path(output_path) if output_path else Path("candidate_nodes.png")
+
+    all_nodes = _get_all_node_positions(data)
+
+    fig, ax = ox.plot_graph(
+        data.raw_graph,
+        figsize=(14, 12),
+        bgcolor="#FFFFFF",
+        node_size=10,
+        node_color="#000000",
+        edge_color="#444444",
+        show=False,
+        close=False,
+    )
+
+    pos = _prepare_positions_for_plotting(data, all_nodes)
+    colors = plt.cm.tab10.colors
+
+    all_x = [p[0] for p in pos.values()]
+    all_y = [p[1] for p in pos.values()]
+    extent = max(max(all_x) - min(all_x), max(all_y) - min(all_y))
+    arrow_length = extent * 0.02
+
+    candidates = [candidates[-1]] if candidates else []
+
+    for turn_idx, turn_candidates in enumerate(candidates):
+        if not turn_candidates:
+            continue
+
+        color = colors[turn_idx % len(colors)]
+
+        node_scores = {}
+        node_data = {}
+        for node_id, entry_neighbor, exit_neighbor, score in turn_candidates:
+            if node_id not in node_scores or score < node_scores[node_id]:
+                node_scores[node_id] = score
+                node_data[node_id] = (entry_neighbor, exit_neighbor, score)
+
+        candidate_node_ids = list(node_scores.keys())
+
+        if node_scores:
+            node_colors, node_sizes = _compute_node_colors_and_sizes(
+                candidate_node_ids, node_scores, color
+            )
+
+            nx.draw_networkx_nodes(
+                data.raw_graph,
+                pos,
+                nodelist=candidate_node_ids,
+                ax=ax,
+                node_color=node_colors,
+                node_size=node_sizes,
+                alpha=0.8,
+                edgecolors="black",
+                linewidths=0.5,
+            )
+
+            min_score = min(node_scores.values())
+            max_score = max(node_scores.values())
+            best_score_deg = np.rad2deg(min_score)
+            worst_score_deg = np.rad2deg(max_score)
+            ax.plot(
+                [],
+                [],
+                marker="o",
+                color=color,
+                linestyle="",
+                markersize=8,
+                label=f"Turn {turn_idx + 1} ({len(candidate_node_ids)} candidates)\n"
+                f"Score range: {best_score_deg:.1f}° - {worst_score_deg:.1f}°",
+            )
+
+        _draw_candidate_arrows(ax, turn_candidates, node_data, pos, data, arrow_length)
+
+    if frame_idx is not None:
+        gt_node = data.get_gt_node(frame_idx)
+        if gt_node in pos:
+            ax.scatter(
+                [pos[gt_node][0]],
+                [pos[gt_node][1]],
+                c="green",
+                s=200,
+                marker="*",
+                edgecolors="black",
+                linewidths=1,
+                label="Ground Truth",
+                zorder=12,
+            )
+
+    ax.plot([], [], color="blue", lw=2, label="Entry direction")
+    ax.plot([], [], color="red", lw=2, label="Exit direction")
+
+    ax.set_aspect("equal")
+    ax.set_xlabel("Longitude (meters)")
+    ax.set_ylabel("Latitude (meters)")
+    ax.set_title("Road Network Graph with Turn Candidate Nodes\n(Brighter = Better Match)")
+    ax.legend(loc="upper left", fontsize=8)
+
+    plt.tight_layout()
+    fig.savefig(output_path, dpi=150)
+    plt.close(fig)
+    print(f"Saved candidate nodes visualization to {output_path}")
 
 
 # Better way of storing this
@@ -173,7 +620,7 @@ RAW_DICT = {
     0: {
         "path": "raw_data/2011_10_03/2011_10_03_drive_0027_sync/oxts/data/",
         "start": 0,
-        "end": 1500,  # NOTE: 4540
+        "end": 4540,
         "date": "2011_10_03",
         "drive": "0027",
     },
@@ -265,6 +712,9 @@ class Kitti:
         self.sequence = str(args.sequence).zfill(2)  # Ensure sequence is two digits
         self.camera_id = "0"
         self.frame_id = 0
+        self.verbose = args.verbose
+        self.output_dir = args.output_dir
+        self.debug = args.debug
 
         # Read ground truth poses
         with open(
@@ -360,7 +810,7 @@ class Kitti:
         )
 
         # IMU Values
-        self.gt_yaw = [self.data.oxts[i].packet.yaw for i in seq_range]
+        self.gt_yaw = [np.deg2rad(90) - self.data.oxts[i].packet.yaw for i in seq_range]
         self.gt_rot = pp.euler2SO3(
             torch.tensor(
                 [
@@ -401,9 +851,6 @@ class Kitti:
 
         self.duration = 2
 
-        # CVGL Compass
-        self.yaws = [enu_yaw_to_compass_cw(self.data.oxts[i].packet.yaw) for i in seq_range]
-
         # Setup CVGL data: graph, sat images, etc.
         self.setup_graph()
 
@@ -433,13 +880,21 @@ class Kitti:
 
     def get_nodes(self, frame_idx):
         """
-        Takes index of current frame in sequence, get's coord, and return nearest node index from graph
+        Takes index of current frame in sequence, get's coord, and return nearest node index from graph.
         """
         coord = self.get_coord(frame_idx)
         lat, lon = coord
-        nearest_node = ox.distance.nearest_nodes(
-            self.original_graph, lon, lat
-        )  # Note: lon, lat order
+
+        # Find nearest node using haversine distance
+        min_dist = float("inf")
+        nearest_node = None
+        for node, data in self.graph.nodes(data=True):
+            node_lat, node_lon = data["y"], data["x"]
+            dist = haversine((lat, lon), (node_lat, node_lon), unit=Unit.METERS)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_node = node
+
         return nearest_node
 
     def read_intrinsics_param(self):
@@ -467,22 +922,14 @@ class Kitti:
         street = street.resize((1241, 376))  # Check
         return street
 
-    def get_yaw(self, frame=None):
-        return self.yaws[self.frame_id] if frame is None else self.yaws[frame]
-
-    def get_yaws(self, frames=None):
-        if frames is None:
-            return self.yaws
-        return [self.yaws[frame] for frame in frames]
+    def get_gt_yaw(self, frame=None):
+        return self.gt_yaw[self.frame_id] if frame is None else self.gt_yaw[frame]
 
     def get_coord(self, frame=None):
         return self.gt_coords[self.frame_id] if frame is None else self.gt_coords[frame]
 
     def get_start_coord(self):
         return self.gt_coords[0]
-
-    def get_start_yaw(self):
-        return self.yaws[0]
 
     def get_timestamp(self, frame=None):
         return (
@@ -491,7 +938,6 @@ class Kitti:
             else datetime.timestamp(self.data.timestamps[frame])
         )
 
-    # IMU
     def get_imu(self, i):
         start_frame = i - self.duration + 1
         end_frame = i + 1
@@ -509,9 +955,6 @@ class Kitti:
             "init_rot": self.gt_rot[start_frame:end_frame],
             "init_vel": self.gt_vel[start_frame][None, ...],
         }
-
-    def imu_init_rot(self):
-        return self.yaws[0]  # * 2  # Right - why is it halved??
 
     def get_init_value(self):
         return {
@@ -533,44 +976,140 @@ class Kitti:
         idx = self.frame_id if frame is None else frame
         return self.gt_pos_meters[idx].numpy()
 
+    def _get_edge_data_for_bearing(self, node, neighbor):
+        """Get edge data from original_graph or raw_graph."""
+        if self.original_graph.has_edge(node, neighbor):
+            return self.original_graph[node][neighbor]
+        if self.raw_graph.has_edge(node, neighbor):
+            for key in self.raw_graph[node][neighbor]:
+                return self.raw_graph[node][neighbor][key]
+        return None
+
+    def _extract_bearing_from_geometry(self, edge_data) -> float | None:
+        """Extract bearing from edge geometry."""
+        if not edge_data or "geometry" not in edge_data:
+            return None
+        geom = edge_data["geometry"]
+        if not hasattr(geom, "coords"):
+            return None
+        coords = list(geom.coords)
+        if len(coords) < 2:
+            return None
+        lat1, lon1 = coords[0][1], coords[0][0]
+        lat2, lon2 = coords[1][1], coords[1][0]
+        return calculate_bearing(lat1, lon1, lat2, lon2)
+
+    def _calculate_node_bearing(self, node, neighbor) -> float:
+        """Calculate bearing from node to neighbor."""
+        node_lat, node_lon = self.graph.nodes[node]["y"], self.graph.nodes[node]["x"]
+        edge_data = self._get_edge_data_for_bearing(node, neighbor)
+        bearing = self._extract_bearing_from_geometry(edge_data)
+        if bearing is None:
+            neighbor_lat = self.graph.nodes[neighbor]["y"]
+            neighbor_lon = self.graph.nodes[neighbor]["x"]
+            bearing = calculate_bearing(node_lat, node_lon, neighbor_lat, neighbor_lon)
+        return bearing
+
+    def _compute_node_yaws(self, node) -> dict:
+        """Compute yaw angles for all neighbors of a node."""
+        node_yaws = {}
+        for neighbor in self.graph.neighbors(node):
+            node_yaws[neighbor] = self._calculate_node_bearing(node, neighbor)
+        return node_yaws
+
+    def _plot_graph_with_bearings(self):
+        """Plot the graph with bearing arrows for debugging."""
+        fig, ax = plt.subplots(figsize=(12, 12))
+        pos = {node: (data["x"], data["y"]) for node, data in self.graph.nodes(data=True)}
+        nx.draw_networkx_edges(self.graph, pos, ax=ax, edge_color="gray", width=1)
+        nx.draw_networkx_nodes(self.graph, pos, ax=ax, node_color="red", node_size=10)
+
+        all_x = [p[0] for p in pos.values()]
+        all_y = [p[1] for p in pos.values()]
+        extent = max(max(all_x) - min(all_x), max(all_y) - min(all_y))
+        arrow_length = extent * 0.015
+
+        for node, data in self.graph.nodes(data=True):
+            node_x, node_y = pos[node]
+            yaws = data.get("yaws", {})
+            for bearing in yaws.values():
+                math_angle = np.pi / 2 - bearing
+                dx = arrow_length * np.cos(math_angle)
+                dy = arrow_length * np.sin(math_angle)
+                ax.annotate(
+                    "",
+                    xy=(node_x + dx, node_y + dy),
+                    xytext=(node_x, node_y),
+                    arrowprops={"arrowstyle": "->", "color": "blue", "lw": 0.8, "alpha": 0.6},
+                )
+
+        ax.set_xlabel("Longitude")
+        ax.set_ylabel("Latitude")
+        ax.set_title(f"KITTI Sequence {self.sequence} Road Network with Exit Bearings")
+        fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_graph.png", dpi=150)
+        plt.close(fig)
+
     def setup_graph(self):
         g = ox.graph.graph_from_point(
             center_point=self.mid_coord,
             dist=500,
             dist_type="bbox",
             network_type="drive",
-            simplify=True,  # Only keeps junctions as nodes
-            retain_all=False,  # Only keep the largest connected component
-            truncate_by_edge=False,  # Basically keeps neighbouring nodes from outside the bbox
+            simplify=True,
+            retain_all=False,
+            truncate_by_edge=False,
             custom_filter=None,
         )
         g = ox.projection.project_graph(g, to_latlong=True)
         g.remove_edges_from(nx.selfloop_edges(g))
 
-        g = simplify_sharp_turns(g)
+        if self.debug:
+            fig, ax = ox.plot_graph(
+                g,
+                figsize=(12, 12),
+                bgcolor="#FFFFFF",
+                node_size=10,
+                node_color="#000000",
+                edge_color="#444444",
+                show=False,
+                close=False,
+            )
+            ax.set_title(f"KITTI Sequence {self.sequence} Raw Road Network Graph")
+            fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_raw_graph.png", dpi=300)
+            plt.close(fig)
 
-        self.edge_angles = calculate_bearings(g)
+        self.raw_graph = g
+        g = simplify_sharp_turns(g, min_total_turn_deg=20)
         self.original_graph = g
-        # Create networkx graph
+
         self.graph = nx.Graph()
         for n in g.nodes(data=True):
             self.graph.add_node(n[0], x=n[1]["x"], y=n[1]["y"])
         for start, end in g.edges():
             self.graph.add_edge(start, end)
-        node_list = list(self.graph.nodes)
 
-        # Download lots of streetviews per satellite image patch to improve CVGL
+        node_list = list(self.graph.nodes)
+        self.node_coords = {}
+        for node in node_list:
+            self.node_coords[node] = (
+                float(self.graph.nodes[node]["y"]),
+                float(self.graph.nodes[node]["x"]),
+            )
+
         for node in tqdm(node_list, "Downloading Junction Data", position=0, total=len(node_list)):
             pos = (
                 float(self.graph.nodes[node]["y"]),
                 float(self.graph.nodes[node]["x"]),
-            )  # (lat, lon)
+            )
             sat_image = download_satmap(pos)
-            self.graph.nodes[node]["sat_image"] = sat_image  # Now just the path
+            self.graph.nodes[node]["sat_image"] = sat_image
+            self.graph.nodes[node]["yaws"] = self._compute_node_yaws(node)
 
-            self.graph.nodes[node]["yaws"] = {
-                n: self.edge_angles[node][n] for n in self.graph.neighbors(node)
-            }
+        if self.debug:
+            print(
+                f"Graph has {self.graph.number_of_nodes()} nodes and {self.graph.number_of_edges()} edges."
+            )
+            self._plot_graph_with_bearings()
 
     def download_streetview(self, node_coord, number=5):
         sv_images = streetview.search_panoramas(lat=node_coord[0], lon=node_coord[1])
@@ -609,6 +1148,37 @@ class Kitti:
                 print(f"Failed to download panorama {pano.pano_id} at {node_coord}.")
                 continue
         return panos
+
+    def get_gt_node(self, frame_idx, lookback_frames: int = 10):
+        """Get the graph node that the vehicle has turned through.
+
+        Uses a lookback strategy to find the node closest to an earlier frame,
+        which is more robust for identifying the node the vehicle has already
+        passed through during a turn.
+
+        Args:
+            frame_idx: Current frame index.
+            lookback_frames: Number of frames to look back (default 10).
+
+        Returns:
+            The nearest node ID to the earlier frame position.
+        """
+        # Use an earlier frame to find the node we've already passed through
+        lookback_idx = max(0, frame_idx - lookback_frames)
+        coord = self.get_coord(lookback_idx)
+        lat, lon = coord
+
+        # Find nearest node using haversine distance
+        min_dist = float("inf")
+        nearest_node = None
+        for node, data in self.graph.nodes(data=True):
+            node_lat, node_lon = data["y"], data["x"]
+            dist = haversine((lat, lon), (node_lat, node_lon), unit=Unit.METERS)
+            if dist < min_dist:
+                min_dist = dist
+                nearest_node = node
+
+        return nearest_node
 
 
 class KittiCVGL(Dataset):
