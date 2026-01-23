@@ -1005,6 +1005,8 @@ class Kitti:
             edge_data: The edge geometry data
             is_reversed: If True, the edge geometry is stored neighbor->node and needs reversal
         """
+        edge_data = edge_data[0] if isinstance(edge_data, list) else edge_data
+
         if not edge_data or "geometry" not in edge_data:
             return None
         geom = edge_data["geometry"]
@@ -1048,6 +1050,7 @@ class Kitti:
         """Calculate bearing from node to neighbor."""
         node_lat, node_lon = self.graph.nodes[node]["y"], self.graph.nodes[node]["x"]
 
+        # TODO REE here
         edge_data = self._get_edge_data_for_bearing(node, neighbor)
 
         bearing = self._extract_bearing_from_geometry(node, edge_data)
