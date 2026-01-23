@@ -1035,6 +1035,15 @@ class Kitti:
 
     def _calculate_node_bearing(self, node, neighbor) -> float:
         """Calculate bearing from node to neighbor."""
+
+        # For the original nodes - they have the geometry data
+        if node in self.raw_graph and neighbor in self.raw_graph:
+            edge_data = self.raw_graph.get_edge_data(node, neighbor)
+            if edge_data and "geometry" in edge_data:
+                bearing = self._extract_bearing_from_geometry(node, edge_data)
+                if bearing is not None:
+                    return bearing
+        # The simplified graph may not have geometry, so fall back to haversine
         node_lat, node_lon = self.graph.nodes[node]["y"], self.graph.nodes[node]["x"]
         edge_data, is_reversed = self._get_edge_data_for_bearing(node, neighbor)
         bearing = self._extract_bearing_from_geometry(node, edge_data)
@@ -1111,6 +1120,9 @@ class Kitti:
             ax.set_title(f"KITTI Sequence {self.sequence} Raw Road Network Graph")
             fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_raw_graph.png", dpi=300)
             plt.close(fig)
+
+        # Use the geometries for getting node yaws
+        self.raw_graph = g.copy()
 
         g = simplify_sharp_turns(g)
 
