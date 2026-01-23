@@ -980,14 +980,22 @@ class Kitti:
         Returns: tuple of (edge_data, is_reversed) where is_reversed indicates
                  if the edge was found in reverse direction (neighbor -> node).
         """
-        # Try forward direction first (node -> neighbor)
-        if self.original_graph.has_edge(node, neighbor):
-            return (self.original_graph[node][neighbor], False)
+        # For original graph without inserted nodes
+        if node in self.original_graph.nodes and neighbor in self.original_graph.nodes:
+            if self.original_graph.has_edge(node, neighbor):
+                return self.original_graph[node][neighbor]
 
-        # Try reverse direction (neighbor -> node)
-        if self.original_graph.has_edge(neighbor, node):
-            return (self.original_graph[neighbor][node], True)
-        return (None, False)
+            if self.original_graph.has_edge(neighbor, node):
+                return self.original_graph[neighbor][node]
+
+        if node in self.graph.nodes and neighbor in self.graph.nodes:
+            if self.graph.has_edge(node, neighbor):
+                return self.graph[node][neighbor]
+
+            if self.graph.has_edge(neighbor, node):
+                return self.graph[neighbor][node]
+
+        return None
 
     def _extract_bearing_from_geometry(self, node, edge_data) -> float | None:
         """Extract bearing from edge geometry using the first segment from the node.
@@ -997,8 +1005,6 @@ class Kitti:
             edge_data: The edge geometry data
             is_reversed: If True, the edge geometry is stored neighbor->node and needs reversal
         """
-        edge_data = edge_data[0]
-
         if not edge_data or "geometry" not in edge_data:
             return None
         geom = edge_data["geometry"]
@@ -1041,8 +1047,11 @@ class Kitti:
     def _calculate_node_bearing(self, node, neighbor) -> float:
         """Calculate bearing from node to neighbor."""
         node_lat, node_lon = self.graph.nodes[node]["y"], self.graph.nodes[node]["x"]
-        edge_data, is_reversed = self._get_edge_data_for_bearing(node, neighbor)
+
+        edge_data = self._get_edge_data_for_bearing(node, neighbor)
+
         bearing = self._extract_bearing_from_geometry(node, edge_data)
+
         if bearing is None:
             neighbor_lat = self.graph.nodes[neighbor]["y"]
             neighbor_lon = self.graph.nodes[neighbor]["x"]
@@ -1117,7 +1126,9 @@ class Kitti:
             fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_raw_graph.png", dpi=300)
             plt.close(fig)
 
-        self.graph = simplify_sharp_turns(g)
+        self.original_graph = g.copy()
+
+        g = simplify_sharp_turns(g)
 
         self.graph = nx.Graph()
         for n in g.nodes(data=True):
