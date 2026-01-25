@@ -1060,7 +1060,20 @@ class Kitti:
 
     def _plot_graph_with_bearings(self):
         """Plot the graph with bearing arrows for debugging."""
-        fig, ax = plt.subplots(figsize=(12, 12))
+        # Plot raw_graph in the background using ox.plot_graph
+        fig, ax = ox.plot_graph(
+            self.raw_graph,
+            figsize=(12, 12),
+            bgcolor="#FFFFFF",
+            node_size=5,
+            node_color="#CCCCCC",
+            edge_color="#B4B4B4FF",
+            edge_linewidth=0.5,
+            show=False,
+            close=False,
+        )
+
+        # Plot the simplified graph on top
         pos = {node: (data["x"], data["y"]) for node, data in self.graph.nodes(data=True)}
         nx.draw_networkx_edges(self.graph, pos, ax=ax, edge_color="gray", width=1)
         nx.draw_networkx_nodes(self.graph, pos, ax=ax, node_color="red", node_size=10)
@@ -1103,21 +1116,6 @@ class Kitti:
         )
         g = ox.projection.project_graph(g, to_latlong=True)
         g.remove_edges_from(nx.selfloop_edges(g))
-
-        if self.debug:
-            fig, ax = ox.plot_graph(
-                g,
-                figsize=(12, 12),
-                bgcolor="#FFFFFF",
-                node_size=10,
-                node_color="#000000",
-                edge_color="#444444",
-                show=False,
-                close=False,
-            )
-            ax.set_title(f"KITTI Sequence {self.sequence} Raw Road Network Graph")
-            fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_raw_graph.png", dpi=300)
-            plt.close(fig)
 
         self.raw_graph = g
         g = simplify_sharp_turns(g, min_total_turn_deg=20)
