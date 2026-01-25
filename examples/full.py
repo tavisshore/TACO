@@ -148,16 +148,12 @@ def main() -> None:
         if len(turns.entry_angles) > num_turns:
             num_turns += 1
 
-            if len(turns.entry_angles) == 27:
-                print("Debug: turn 27")
-                print(np.degrees(turns.entry_angles[-1]))
-                print(np.degrees(turns.exit_angles[-1]))
-                print()
-
+            # Auto-estimate distance bounds from IMU velocity and turn timing
+            # (can also specify manually with min_distance_meters/max_distance_meters)
             candidate_nodes = narrow_candidates_from_turns(
                 data=data,
                 turns=turns,
-                angle_tolerance=np.deg2rad(25),  # radians
+                angle_tolerance=np.radians(20),  # radians
                 verbose=True,
                 output_path=output_dir / f"frame_{len(turns.entry_angles)}.jpg",
                 frame_idx=idx,

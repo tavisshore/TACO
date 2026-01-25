@@ -144,3 +144,4 @@ sat_cache/
 **/*/log.txt
 results/
 *.json
+output/
