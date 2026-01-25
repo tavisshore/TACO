@@ -101,6 +101,7 @@ def main() -> None:
             imu_data["gyro_full"][:, 2],
             imu_data["dt_full"],
             initial_heading=init_yaw,
+            min_turn_angle=np.radians(25),
         )
 
         imu_predict = integrator(
@@ -146,6 +147,12 @@ def main() -> None:
         # NOTE: Replace with CVGL
         if len(turns.entry_angles) > num_turns:
             num_turns += 1
+
+            if len(turns.entry_angles) == 27:
+                print("Debug: turn 27")
+                print(np.degrees(turns.entry_angles[-1]))
+                print(np.degrees(turns.exit_angles[-1]))
+                print()
 
             candidate_nodes = narrow_candidates_from_turns(
                 data=data,

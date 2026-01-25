@@ -612,7 +612,6 @@ def plot_candidate_nodes(
     plt.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
-    print(f"Saved candidate nodes visualization to {output_path}")
 
 
 # Better way of storing this
