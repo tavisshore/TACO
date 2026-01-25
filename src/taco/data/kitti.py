@@ -475,11 +475,7 @@ def _draw_candidate_arrows(
             continue
 
         node_x, node_y = pos[node_id]
-        yaws = (
-            data.raw_graph.nodes[node_id].get("yaws", {})
-            if data.raw_graph.has_node(node_id)
-            else {}
-        )
+        yaws = data.graph.nodes[node_id].get("yaws", {}) if data.graph.has_node(node_id) else {}
 
         if entry_neighbor in yaws:
             _draw_direction_arrow(
