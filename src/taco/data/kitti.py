@@ -340,7 +340,7 @@ def narrow_candidates_by_turn_sequence(
     data,
     turns: TurnDetection,
     angle_tolerance: float = 0.35,
-    connectivity_check: bool = True,
+    connectivity_check: bool = False,
     max_path_length: int = 10,
     fov_half_angle: float = np.pi / 3,  # 60 degrees half-angle (120 deg total FOV)
     max_distance_meters: float = 200.0,  # Maximum distance to consider candidates
