@@ -1,25 +1,15 @@
 """CVGL (Computer Vision Global Localization) module."""
 
+from .cvusa import CVUSADataset, CVUSADatasetConfig
 from .localizer import CVGLLocalizer
 from .measurement import CVGLMeasurement
+from .model import ImageRetrievalModel, ImageRetrievalModelConfig
 
 __all__ = [
     "CVGLLocalizer",
     "CVGLMeasurement",
+    "CVUSADataset",
+    "CVUSADatasetConfig",
+    "ImageRetrievalModel",
+    "ImageRetrievalModelConfig",
 ]
-
-# Optional imports (require PyTorch)
-try:
-    from .dataset import ImageDatabaseDataset, TripletDataset
-    from .model import ImageRetrievalModel
-
-    __all__.extend(
-        [
-            "ImageDatabaseDataset",
-            "ImageRetrievalModel",
-            "TripletDataset",
-        ]
-    )
-except ImportError:
-    # PyTorch not available, skip model imports
-    pass

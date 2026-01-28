@@ -144,3 +144,5 @@ sat_cache/
 **/*/log.txt
 results/
 *.json
+output/
+lightning_logs/

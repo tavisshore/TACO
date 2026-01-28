@@ -37,7 +37,7 @@ def detect_corners_from_gyro(
     gyro_z: npt.NDArray[np.float64] | torch.Tensor,
     dt: float | npt.NDArray[np.float64] | torch.Tensor = 0.1,
     initial_heading: float = 0.0,
-    min_yaw_rate: float = 0.15,
+    min_yaw_rate: float = 0.2,
     min_turn_angle: float = 0.25,
     min_apex_distance: int = 10,
     min_turn_duration: int = 5,

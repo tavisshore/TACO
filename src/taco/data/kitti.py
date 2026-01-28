@@ -247,28 +247,125 @@ def find_matching_node_turns(
     return matches
 
 
+def _build_reachable_nodes_set(
+    graph: nx.Graph,
+    prev_candidates: list[tuple[int, int, int, float]],
+    prev_exit_angle: float,
+    max_path_length: int,
+) -> set[int]:
+    """Build set of nodes reachable from previous turn exits.
+
+    Uses BFS to explore nodes reachable within max_path_length hops,
+    following edges aligned with the exit direction.
+
+    Args:
+        graph: NetworkX graph with yaws attribute on nodes.
+        prev_candidates: Previous turn's candidate nodes.
+        prev_exit_angle: Exit angle from previous turn (radians).
+        max_path_length: Maximum path length to search.
+
+    Returns:
+        Set of reachable node IDs.
+    """
+    reachable_nodes = set()
+
+    for _, _, prev_exit_neighbor, _ in prev_candidates:
+        visited = {prev_exit_neighbor}
+        queue = [(prev_exit_neighbor, 0)]  # (node, depth)
+
+        while queue:
+            current_node, depth = queue.pop(0)
+
+            if depth >= max_path_length:
+                continue
+
+            reachable_nodes.add(current_node)
+
+            current_yaws = graph.nodes[current_node].get("yaws", {})
+            for neighbor, bearing in current_yaws.items():
+                if neighbor not in visited:
+                    angle_diff = angle_difference(bearing, prev_exit_angle)
+                    if angle_diff < np.pi / 2:
+                        visited.add(neighbor)
+                        queue.append((neighbor, depth + 1))
+
+    return reachable_nodes
+
+
+def _is_candidate_visible_from_previous(
+    graph: nx.Graph,
+    node_id: int,
+    prev_candidates: list[tuple[int, int, int, float]],
+    prev_exit_angle: float,
+    fov_half_angle: float,
+    min_distance_meters: float,
+    max_distance_meters: float,
+) -> bool:
+    """Check if candidate is visible from any previous turn candidate.
+
+    Args:
+        graph: NetworkX graph with node positions.
+        node_id: Current candidate node ID.
+        prev_candidates: Previous turn's candidate nodes.
+        prev_exit_angle: Exit angle from previous turn (radians).
+        fov_half_angle: Half-angle of camera FOV (radians).
+        min_distance_meters: Minimum distance threshold.
+        max_distance_meters: Maximum distance threshold.
+
+    Returns:
+        True if candidate is visible from any previous candidate.
+    """
+    curr_lat = graph.nodes[node_id]["y"]
+    curr_lon = graph.nodes[node_id]["x"]
+
+    for prev_node_id, _, _, _ in prev_candidates:
+        prev_lat = graph.nodes[prev_node_id]["y"]
+        prev_lon = graph.nodes[prev_node_id]["x"]
+
+        distance = haversine((prev_lat, prev_lon), (curr_lat, curr_lon), unit=Unit.METERS)
+
+        if distance < min_distance_meters or distance > max_distance_meters:
+            continue
+
+        bearing_to_candidate = calculate_bearing(prev_lat, prev_lon, curr_lat, curr_lon)
+        angular_diff = angle_difference(bearing_to_candidate, prev_exit_angle)
+
+        if angular_diff <= fov_half_angle:
+            return True
+
+    return False
+
+
 def narrow_candidates_by_turn_sequence(
     data,
     turns: TurnDetection,
     angle_tolerance: float = 0.35,
-    connectivity_check: bool = True,
+    connectivity_check: bool = False,
     max_path_length: int = 10,
+    fov_half_angle: float = np.pi / 3,  # 60 degrees half-angle (120 deg total FOV)
+    max_distance_meters: float = 200.0,  # Maximum distance to consider candidates
+    min_distance_meters: float = 5.0,  # Minimum distance to avoid same-node matches
 ) -> list[list[tuple[int, int, int, float]]]:
     """Narrow down candidate nodes using a sequence of detected turns.
 
     Given a sequence of turns (entry/exit angle pairs), finds graph nodes that
-    could correspond to each turn. Optionally filters by connectivity (each
-    successive turn node must be reachable from the previous one in the direction
-    of the previous exit angle).
+    could correspond to each turn. Optionally filters by connectivity and camera
+    frustum visibility (each successive turn node must be visible from the previous
+    turn's candidates, considering the camera's field of view and the exit direction).
 
     Args:
-        graph: NetworkX graph with 'yaws' attribute on nodes.
+        data: Kitti data instance with graph attribute.
         turns: TurnDetection object with entry_angles and exit_angles arrays.
         angle_tolerance: Maximum angular difference for a match (radians).
-        connectivity_check: If True, filter candidates to only include nodes
-            reachable from the previous turn's candidates in the direction of
-            the previous exit angle.
+        connectivity_check: If True, filter candidates by:
+            - Graph connectivity (reachable via edges)
+            - Frustum visibility (within camera FOV from previous position)
+            - Distance constraints (within reasonable range)
         max_path_length: Maximum path length to search for connectivity (default 10).
+        fov_half_angle: Half-angle of camera field of view in radians.
+            Default π/3 (60°) gives 120° total FOV.
+        max_distance_meters: Maximum distance in meters to consider candidates.
+        min_distance_meters: Minimum distance in meters to avoid same-node matches.
 
     Returns:
         List of candidate lists, one per turn. Each candidate list contains
@@ -279,59 +376,153 @@ def narrow_candidates_by_turn_sequence(
         raise ValueError("entry_angles and exit_angles must have same length")
 
     graph = data.graph
-
     all_candidates = []
 
     for i, (entry, exit_) in enumerate(zip(turns.entry_angles, turns.exit_angles, strict=True)):
         candidates = find_matching_node_turns(graph, entry, exit_, angle_tolerance)
 
         if connectivity_check and i > 0 and all_candidates[i - 1]:
-            # Get previous turn information
             prev_candidates = all_candidates[i - 1]
             prev_exit_angle = turns.exit_angles[i - 1]
 
-            # Build a set of reachable nodes from previous turn exits
-            # Only consider paths that generally follow the exit angle direction
-            reachable_nodes = set()
+            # Build set of reachable nodes from previous turn exits
+            reachable_nodes = _build_reachable_nodes_set(
+                graph, prev_candidates, prev_exit_angle, max_path_length
+            )
 
-            for _, _, prev_exit_neighbor, _ in prev_candidates:
-                # Start from the exit neighbor of the previous turn
-                # Use BFS to find nodes reachable within max_path_length
-                visited = {prev_exit_neighbor}
-                queue = [(prev_exit_neighbor, 0)]  # (node, depth)
-
-                while queue:
-                    current_node, depth = queue.pop(0)
-
-                    if depth >= max_path_length:
-                        continue
-
-                    reachable_nodes.add(current_node)
-
-                    # Explore neighbors that are roughly in the direction of prev_exit_angle
-                    current_yaws = graph.nodes[current_node].get("yaws", {})
-                    for neighbor, bearing in current_yaws.items():
-                        if neighbor not in visited:
-                            # Check if this edge is roughly aligned with the exit direction
-                            angle_diff = angle_difference(bearing, prev_exit_angle)
-                            # Allow edges within ~90 degrees of the exit direction
-                            if angle_diff < np.pi / 2:
-                                visited.add(neighbor)
-                                queue.append((neighbor, depth + 1))
-
-            # Filter candidates to those reachable in the exit direction
-            reachable_candidates = []
+            # Filter candidates by reachability, frustum visibility, and distance
+            frustum_filtered_candidates = []
             for cand in candidates:
                 node_id, entry_neighbor, _exit_neighbor, _score = cand
-                # Check if the candidate node or its entry neighbor is reachable
-                if node_id in reachable_nodes or entry_neighbor in reachable_nodes:
-                    reachable_candidates.append(cand)
 
-            candidates = reachable_candidates
+                # Check if the node is reachable via graph connectivity
+                if node_id not in reachable_nodes and entry_neighbor not in reachable_nodes:
+                    continue
+
+                # Check if the node is within camera frustum from previous candidates
+                if _is_candidate_visible_from_previous(
+                    graph,
+                    node_id,
+                    prev_candidates,
+                    prev_exit_angle,
+                    fov_half_angle,
+                    min_distance_meters,
+                    max_distance_meters,
+                ):
+                    frustum_filtered_candidates.append(cand)
+
+            candidates = frustum_filtered_candidates
 
         all_candidates.append(candidates)
 
     return all_candidates
+
+
+def estimate_distance_bounds_from_imu(
+    turns: TurnDetection,
+    velocities: np.ndarray | None = None,
+    timestamps: np.ndarray | None = None,
+    dt: np.ndarray | float | None = None,
+    velocity_percentile: float = 50.0,
+    time_window_multiplier: float = 2.0,
+    min_distance: float = 1.0,
+    max_distance: float = 300.0,
+) -> tuple[float, float]:
+    """Estimate reasonable distance bounds between turns based on IMU data.
+
+    Uses vehicle velocity and time between turns to estimate how far the vehicle
+    could travel between consecutive turns. This provides data-driven bounds for
+    frustum filtering.
+
+    Args:
+        turns: TurnDetection object with turn timing information.
+        velocities: Array of velocity magnitudes (m/s) at each timestep.
+            If None, uses a default urban driving speed.
+        timestamps: Array of timestamps (seconds). Either timestamps or dt must be provided.
+        dt: Time step(s) between samples in seconds. Either timestamps or dt must be provided.
+        velocity_percentile: Percentile of velocity to use for distance estimation.
+            Default 50.0 uses median velocity. Higher values (e.g., 75) give more
+            conservative (larger) distance bounds.
+        time_window_multiplier: Multiplier for average time between turns.
+            Larger values give more conservative bounds. Default 2.0.
+        min_distance: Absolute hard minimum distance bound (meters). Only used as a safety
+            floor to prevent unreasonably small values (e.g., when vehicle is stopped).
+            Default 1.0 meter.
+        max_distance: Absolute maximum distance bound (meters). Default 300.0.
+
+    Returns:
+        Tuple of (min_distance_meters, max_distance_meters) suitable for
+        narrow_candidates_from_turns.
+
+    Example:
+        >>> turns = detect_corners_from_gyro(gyro_data, dt)
+        >>> velocities = np.linalg.norm(kitti_data.gt_vel.numpy(), axis=1)
+        >>> min_dist, max_dist = estimate_distance_bounds_from_imu(
+        ...     turns, velocities, dt=kitti_data.dt
+        ... )
+        >>> candidates = narrow_candidates_from_turns(
+        ...     data, turns, min_distance_meters=min_dist, max_distance_meters=max_dist
+        ... )
+    """
+    # Default velocity for urban driving if not provided (m/s)
+    DEFAULT_URBAN_SPEED = 8.0  # ~30 km/h, typical urban driving
+
+    # Estimate velocity
+    if velocities is not None:
+        # Use percentile of actual velocity data
+        velocity_estimate = np.percentile(velocities, velocity_percentile)
+    else:
+        velocity_estimate = DEFAULT_URBAN_SPEED
+
+    # Compute time deltas
+    if len(turns.apex_indices) < 2:
+        # Not enough turns to estimate, use defaults
+        avg_time_between_turns = 10.0  # seconds
+    else:
+        # Calculate time between consecutive turn apexes
+        if timestamps is not None:
+            apex_times = timestamps[turns.apex_indices]
+            time_deltas = np.diff(apex_times)
+        elif dt is not None:
+            # Calculate time from frame differences
+            frame_deltas = np.diff(turns.apex_indices)
+            if isinstance(dt, int | float):
+                time_deltas = frame_deltas * dt
+            else:
+                # Sum dt values between turns
+                dt_array = np.asarray(dt)
+                time_deltas = []
+                for i in range(len(turns.apex_indices) - 1):
+                    start_idx = turns.apex_indices[i]
+                    end_idx = turns.apex_indices[i + 1]
+                    time_deltas.append(np.sum(dt_array[start_idx:end_idx]))
+                time_deltas = np.array(time_deltas)
+        else:
+            raise ValueError("Either timestamps or dt must be provided")
+
+        avg_time_between_turns = np.mean(time_deltas)
+
+    # Estimate distance: velocity * time * multiplier
+    estimated_max_distance = velocity_estimate * avg_time_between_turns * time_window_multiplier
+
+    # Calculate min distance: based on 0.5 seconds of travel
+    # This ensures we don't match nodes that are too close (same intersection)
+    # while still being adaptive to vehicle speed
+    estimated_min_distance = velocity_estimate * 0.5  # 0.5 seconds of travel
+
+    # Apply absolute maximum bound (cap at max_distance)
+    final_max_distance = min(estimated_max_distance, max_distance)
+
+    # For minimum: use velocity-based estimate, but enforce hard lower limit
+    # to avoid unreasonably small values (e.g., when vehicle is stopped)
+    final_min_distance = max(estimated_min_distance, min_distance)
+
+    # Ensure min < max with reasonable ratio
+    if final_min_distance >= final_max_distance * 0.5:
+        # If min is too close to max, reduce min to 10% of max
+        final_min_distance = final_max_distance * 0.1
+
+    return float(final_min_distance), float(final_max_distance)
 
 
 def narrow_candidates_from_turns(
@@ -342,17 +533,30 @@ def narrow_candidates_from_turns(
     verbose: bool = False,
     output_path: str | Path | None = None,
     frame_idx: int | None = None,
+    max_distance_meters: float | None = None,  # None = auto-estimate from IMU
+    min_distance_meters: float | None = None,  # None = auto-estimate from IMU
 ) -> list[list[tuple[int, int, int, float]]]:
     """Convenience wrapper to narrow candidates using TurnDetection result.
+
+    This function filters candidate nodes by:
+    1. Matching turn angles (entry/exit directions)
+    2. Graph connectivity (nodes reachable from previous turn)
+    3. Camera frustum visibility (nodes within FOV from previous position)
+    4. Distance constraints (nodes within reasonable range)
 
     Args:
         data: Kitti data instance with graph attribute.
         turns: TurnDetection dataclass with entry_angles and exit_angles.
         angle_tolerance: Maximum angular difference for a match (radians).
-        connectivity_check: If True, filter by connectivity between successive turns.
+        connectivity_check: If True, filter by connectivity, frustum visibility,
+            and distance constraints between successive turns.
         verbose: If True, save a matplotlib visualization of candidate nodes.
         output_path: Path to save the visualization. Defaults to 'candidate_nodes.png'.
         frame_idx: Frame index for getting ground truth node position.
+        max_distance_meters: Maximum distance to consider candidates. If None,
+            auto-estimated from IMU velocity and turn timing. Default None.
+        min_distance_meters: Minimum distance to avoid same-node matches. If None,
+            auto-estimated from IMU velocity. Default None.
 
     Returns:
         List of candidate lists, one per turn. Each candidate is a tuple of
@@ -362,21 +566,37 @@ def narrow_candidates_from_turns(
     Example:
         >>> from taco.sensors.imu import detect_corners_from_kitti
         >>> turns = detect_corners_from_kitti(kitti_data)
+        >>> # Auto-estimate distance bounds from IMU data
         >>> candidates = narrow_candidates_from_turns(kitti_data, turns, verbose=True)
-        >>> # candidates[i] contains possible nodes for turn i
-        >>> for i, cands in enumerate(candidates):
-        ...     print(f"Turn {i}: {len(cands)} candidate nodes")
-        ...     # Sort by score to get best matches
-        ...     sorted_cands = sorted(cands, key=lambda x: x[3])
-        ...     if sorted_cands:
-        ...         best = sorted_cands[0]
-        ...         print(f"  Best match: node {best[0]} with score {best[3]:.3f} rad")
+        >>> # Or specify manually
+        >>> candidates = narrow_candidates_from_turns(
+        ...     kitti_data, turns, min_distance_meters=10.0, max_distance_meters=150.0
+        ... )
     """
+    # Auto-estimate distance bounds if not provided
+    if max_distance_meters is None or min_distance_meters is None:
+        # Calculate velocity magnitudes from ground truth velocity
+        velocities = np.linalg.norm(data.gt_vel.numpy(), axis=1)
+
+        auto_min, auto_max = estimate_distance_bounds_from_imu(
+            turns=turns,
+            velocities=velocities,
+            dt=data.dt.numpy(),
+        )
+
+        # Use auto-estimated values if not provided
+        if min_distance_meters is None:
+            min_distance_meters = auto_min
+        if max_distance_meters is None:
+            max_distance_meters = auto_max
+
     candidates = narrow_candidates_by_turn_sequence(
         data,
         turns,
         angle_tolerance=angle_tolerance,
         connectivity_check=connectivity_check,
+        max_distance_meters=max_distance_meters,
+        min_distance_meters=min_distance_meters,
     )
 
     if verbose:
@@ -396,7 +616,9 @@ def _get_all_node_positions(data) -> dict:
 
 def _prepare_positions_for_plotting(data, all_nodes: dict) -> dict:
     """Prepare node positions in the correct coordinate system for plotting."""
-    ox_pos = {node: (data_pt["x"], data_pt["y"]) for node, data_pt in data.graph.nodes(data=True)}
+    ox_pos = {
+        node: (data_pt["x"], data_pt["y"]) for node, data_pt in data.raw_graph.nodes(data=True)
+    }
     for node, coords in all_nodes.items():
         if node not in ox_pos:
             ox_pos[node] = coords
@@ -607,7 +829,6 @@ def plot_candidate_nodes(
     plt.tight_layout()
     fig.savefig(output_path, dpi=150)
     plt.close(fig)
-    print(f"Saved candidate nodes visualization to {output_path}")
 
 
 # Better way of storing this
@@ -1045,7 +1266,7 @@ class Kitti:
                     return bearing
         # The simplified graph may not have geometry, so fall back to haversine
         node_lat, node_lon = self.graph.nodes[node]["y"], self.graph.nodes[node]["x"]
-        edge_data, is_reversed = self._get_edge_data_for_bearing(node, neighbor)
+        edge_data, _ = self._get_edge_data_for_bearing(node, neighbor)
         bearing = self._extract_bearing_from_geometry(node, edge_data)
         if bearing is None:
             neighbor_lat = self.graph.nodes[neighbor]["y"]
@@ -1062,7 +1283,20 @@ class Kitti:
 
     def _plot_graph_with_bearings(self):
         """Plot the graph with bearing arrows for debugging."""
-        fig, ax = plt.subplots(figsize=(12, 12))
+        # Plot raw_graph in the background using ox.plot_graph
+        fig, ax = ox.plot_graph(
+            self.raw_graph,
+            figsize=(12, 12),
+            bgcolor="#FFFFFF",
+            node_size=5,
+            node_color="#CCCCCC",
+            edge_color="#B4B4B4FF",
+            edge_linewidth=0.5,
+            show=False,
+            close=False,
+        )
+
+        # Plot the simplified graph on top
         pos = {node: (data["x"], data["y"]) for node, data in self.graph.nodes(data=True)}
         nx.draw_networkx_edges(self.graph, pos, ax=ax, edge_color="gray", width=1)
         nx.draw_networkx_nodes(self.graph, pos, ax=ax, node_color="red", node_size=10)
@@ -1106,25 +1340,9 @@ class Kitti:
         g = ox.projection.project_graph(g, to_latlong=True)
         g.remove_edges_from(nx.selfloop_edges(g))
 
-        if self.debug:
-            fig, ax = ox.plot_graph(
-                g,
-                figsize=(12, 12),
-                bgcolor="#FFFFFF",
-                node_size=10,
-                node_color="#000000",
-                edge_color="#444444",
-                show=False,
-                close=False,
-            )
-            ax.set_title(f"KITTI Sequence {self.sequence} Raw Road Network Graph")
-            fig.savefig(f"{self.output_dir}/kitti_sequence_{self.sequence}_raw_graph.png", dpi=300)
-            plt.close(fig)
-
-        # Use the geometries for getting node yaws
-        self.raw_graph = g.copy()
-
-        g = simplify_sharp_turns(g)
+        self.raw_graph = g
+        g = simplify_sharp_turns(g, min_total_turn_deg=20)
+        self.original_graph = g
 
         self.graph = nx.Graph()
         for n in g.nodes(data=True):
