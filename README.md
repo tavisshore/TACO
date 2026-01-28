@@ -27,7 +27,7 @@ For development:
 ```bash
 git clone https://github.com/tavisshore/taco.git
 cd taco
-pip install -e ".[dev,docs]"
+pip install -e ".[dev]"
 pre-commit install
 ```
 

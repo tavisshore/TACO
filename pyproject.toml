@@ -59,13 +59,8 @@ dev = [
     "mypy>=1.8.0",
     "pre-commit>=3.6.0",
 ]
-docs = [
-    "sphinx>=7.2.0",
-    "sphinx-rtd-theme>=2.0.0",
-    "sphinx-autodoc-typehints>=1.25.0",
-]
 all = [
-    "taco[cvgl,kitti,dev,docs]",
+    "taco[cvgl,kitti,dev]",
 ]
 
 [project.urls]
@@ -129,34 +124,7 @@ target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]
-select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # pyflakes
-    "I",      # isort
-    "N",      # pep8-naming
-    "UP",     # pyupgrade
-    "B",      # flake8-bugbear
-    "C4",     # flake8-comprehensions
-    "DTZ",    # flake8-datetimez
-    "T10",    # flake8-debugger
-    "EXE",    # flake8-executable
-    "ISC",    # flake8-implicit-str-concat
-    "ICN",    # flake8-import-conventions
-    "PIE",    # flake8-pie
-    "PT",     # flake8-pytest-style
-    "Q",      # flake8-quotes
-    "RSE",    # flake8-raise
-    "RET",    # flake8-return
-    "SIM",    # flake8-simplify
-    "TID",    # flake8-tidy-imports
-    "ARG",    # flake8-unused-arguments
-    "PTH",    # flake8-use-pathlib
-    "ERA",    # eradicate
-    "PL",     # pylint
-    "PERF",   # perflint
-    "RUF",    # ruff-specific rules
-]
+select = ["E", "F", "W", "C", "I", "B"]
 ignore = [
     "E501",    # line too long (handled by black)
     "N803",    # allow uppercase argument names (T for transform matrix)
@@ -170,7 +138,6 @@ ignore = [
     "RET504",  # allow assignment before return for clarity
     "ARG001",  # unused function arguments (kept for API consistency)
     "ARG002",  # unused method arguments (kept for API consistency)
-    "ERA001",  # allow commented code (useful for documentation)
     "F401",    # allow unused imports in __init__ (re-exports)
     "PTH",     # allow os.path and open() (not always necessary to use pathlib)
     "UP006",   # allow List/Dict/Tuple in annotations (more explicit than list/dict/tuple)
@@ -187,15 +154,9 @@ ignore = [
     "PLR0915", # too many statements allowed in examples
     "PLR2004", # magic values allowed in examples
 ]
-"docs/**/*.py" = [
-    "PTH",    # allow os.path in docs
-]
 
 [tool.ruff.lint.isort]
 known-first-party = ["taco"]
-
-[tool.ruff.lint.pydocstyle]
-convention = "google"
 
 # Black configuration
 [tool.black]

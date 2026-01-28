@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Any, Literal, Tuple
 
+import gtsam
 import lightning as L
 import numpy as np
 import torch
@@ -10,6 +11,15 @@ import torch.nn.functional as F
 from pytorch_metric_learning import losses
 from torch import Tensor, nn
 from torchvision import models
+
+try:
+    import utm
+
+    UTM_AVAILABLE = True
+except ImportError:
+    UTM_AVAILABLE = False
+
+from taco.sensors.cvgl.measurement import CVGLMeasurement
 
 
 @dataclass
@@ -24,6 +34,12 @@ class ImageRetrievalModelConfig:
         margin: Margin for triplet loss
         freeze_backbone: If True, freeze ConvNeXt backbone weights
         loss_type: Type of loss function to use ('combined', 'ntxent', 'triplet')
+        scheduler_type: Type of learning rate scheduler ('cosine', 'step', 'plateau', 'none')
+        scheduler_t_max: T_max for cosine annealing (number of epochs for full cycle)
+        scheduler_eta_min: Minimum learning rate for cosine annealing
+        scheduler_step_size: Step size for StepLR scheduler
+        scheduler_gamma: Multiplicative factor for StepLR and ReduceLROnPlateau
+        scheduler_patience: Patience for ReduceLROnPlateau scheduler
     """
 
     embedding_dim: int = 512
@@ -33,6 +49,12 @@ class ImageRetrievalModelConfig:
     margin: float = 0.2
     freeze_backbone: bool = False
     loss_type: Literal["combined", "ntxent", "triplet"] = "ntxent"
+    scheduler_type: Literal["cosine", "step", "plateau", "none"] = "cosine"
+    scheduler_t_max: int = 100
+    scheduler_eta_min: float = 1e-6
+    scheduler_step_size: int = 30
+    scheduler_gamma: float = 0.1
+    scheduler_patience: int = 10
 
 
 class ImageRetrievalModel(L.LightningModule):
@@ -97,6 +119,16 @@ class ImageRetrievalModel(L.LightningModule):
 
         # Initialize NT-Xent loss from pytorch_metric_learning
         self.ntxent_loss = losses.NTXentLoss(temperature=config.temperature)
+
+        # Reference database storage
+        self.reference_embeddings: np.ndarray | None = None
+        self.reference_coordinates: np.ndarray | None = None  # GPS (lat, lon)
+        self.reference_origin: tuple[float, float] | None = (
+            None  # (lat, lon) origin for local frame
+        )
+        self.use_utm: bool = False  # Whether to use UTM coordinates
+        self.utm_zone: int | None = None  # UTM zone number
+        self.utm_letter: str | None = None  # UTM zone letter
 
     def forward(self, images: Tensor) -> Tensor:
         """Forward pass to compute image embeddings.
@@ -398,20 +430,55 @@ class ImageRetrievalModel(L.LightningModule):
             weight_decay=0.01,
         )
 
-        # Cosine annealing scheduler
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=100,
-            eta_min=1e-6,
-        )
+        # Configure scheduler based on config
+        if self.config.scheduler_type == "none":
+            return {"optimizer": optimizer}
 
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "epoch",
-            },
-        }
+        if self.config.scheduler_type == "cosine":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=self.config.scheduler_t_max,
+                eta_min=self.config.scheduler_eta_min,
+            )
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "epoch",
+                },
+            }
+
+        if self.config.scheduler_type == "step":
+            scheduler = torch.optim.lr_scheduler.StepLR(
+                optimizer,
+                step_size=self.config.scheduler_step_size,
+                gamma=self.config.scheduler_gamma,
+            )
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "epoch",
+                },
+            }
+
+        if self.config.scheduler_type == "plateau":
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=self.config.scheduler_gamma,
+                patience=self.config.scheduler_patience,
+            )
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "monitor": "val/loss",
+                    "interval": "epoch",
+                },
+            }
+
+        raise ValueError(f"Unknown scheduler type: {self.config.scheduler_type}")
 
     @torch.no_grad()  # type: ignore[untyped-decorator]
     def encode_image(
@@ -501,6 +568,471 @@ class ImageRetrievalModel(L.LightningModule):
         top_similarities, top_indices = torch.topk(similarities, top_k)
 
         return top_indices.numpy(), top_similarities.numpy()
+
+    @torch.no_grad()  # type: ignore[untyped-decorator]
+    def build_reference_database(
+        self,
+        images: np.ndarray | list[np.ndarray],
+        coordinates: np.ndarray,
+        origin: tuple[float, float] | None = None,
+        use_utm: bool = True,
+        device: torch.device | None = None,
+        batch_size: int = 32,
+    ) -> None:
+        """Build a reference database from input images and GPS coordinates.
+
+        This method processes a collection of images, computes their embeddings,
+        and stores them along with their corresponding GPS coordinates for later
+        querying. CVGL provides position-only measurements; heading comes from IMU.
+
+        Args:
+            images: Reference images as either:
+                - numpy array of shape (N, H, W, 3) in RGB, [0, 255], or
+                - list of N numpy arrays each of shape (H, W, 3) in RGB, [0, 255]
+            coordinates: GPS coordinates of shape (N, 2) where each row is [latitude, longitude].
+            origin: Optional reference origin (latitude, longitude) for local coordinate conversion.
+                If None, uses the first coordinate as origin. Only used if use_utm=False.
+            use_utm: If True, use UTM coordinates for consistent global frame (recommended).
+                If False, use local tangent plane approximation (only for small areas <10km).
+            device: Device to run inference on. If None, uses model's current device.
+            batch_size: Batch size for processing images.
+
+        Raises:
+            ValueError: If the number of images and coordinates don't match.
+            ImportError: If use_utm=True but utm package is not installed.
+        """
+        if device is None:
+            device = next(self.parameters()).device
+
+        # Handle list of images
+        if isinstance(images, list):
+            num_images = len(images)
+        else:
+            num_images = len(images)
+
+        # Validate inputs
+        if len(coordinates) != num_images:
+            raise ValueError(
+                f"Number of images ({num_images}) must match number of coordinates ({len(coordinates)})"
+            )
+
+        # Store coordinates (headings not needed - CVGL is position-only)
+        self.reference_coordinates = np.array(coordinates, dtype=np.float32)
+
+        # Set coordinate system
+        self.use_utm = use_utm
+
+        if use_utm:
+            # Convert first coordinate to determine UTM zone
+            if not UTM_AVAILABLE:
+                raise ImportError(
+                    "utm package is required for UTM conversion. "
+                    "Install it with: pip install utm"
+                )
+            _, _, zone_number, zone_letter = utm.from_latlon(coordinates[0, 0], coordinates[0, 1])
+            self.utm_zone = zone_number
+            self.utm_letter = zone_letter
+            # Origin not used for UTM (uses UTM zone origin)
+            self.reference_origin = None
+        else:
+            # Store or compute origin for local coordinate frame
+            if origin is not None:
+                self.reference_origin = origin
+            else:
+                # Use first coordinate as origin
+                self.reference_origin = (float(coordinates[0, 0]), float(coordinates[0, 1]))
+            self.utm_zone = None
+            self.utm_letter = None
+
+        # Process images in batches to compute embeddings
+        embeddings_list = []
+        self.eval()
+
+        for i in range(0, num_images, batch_size):
+            batch_end = min(i + batch_size, num_images)
+
+            # Get batch of images
+            if isinstance(images, list):
+                batch_images = images[i:batch_end]
+            else:
+                batch_images = images[i:batch_end]
+
+            # Prepare batch tensor
+            batch_tensors = []
+            for img in batch_images:
+                # Convert to tensor and normalize
+                img_tensor = torch.from_numpy(img).permute(2, 0, 1).float()
+                img_tensor = img_tensor / 255.0
+
+                # Normalize using ImageNet statistics
+                mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
+                std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
+                img_tensor = (img_tensor - mean) / std
+
+                batch_tensors.append(img_tensor)
+
+            # Stack into batch and move to device
+            batch_tensor = torch.stack(batch_tensors).to(device)
+
+            # Compute embeddings
+            batch_embeddings = self(batch_tensor)
+            embeddings_list.append(batch_embeddings.cpu().numpy())
+
+        # Concatenate all embeddings
+        self.reference_embeddings = np.vstack(embeddings_list)
+
+    @torch.no_grad()  # type: ignore[untyped-decorator]
+    def query_database(
+        self,
+        query_image: np.ndarray,
+        top_k: int = 5,
+        device: torch.device | None = None,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Query the reference database with an image.
+
+        Embeds the query image, searches the reference database, and returns
+        the GPS coordinates of the top-K most similar reference images.
+
+        Args:
+            query_image: Query image as numpy array (H, W, 3) in RGB, [0, 255].
+            top_k: Number of top results to return.
+            device: Device to run inference on. If None, uses model's current device.
+
+        Returns:
+            Tuple of (coordinates, similarities) where:
+                - coordinates: GPS coordinates of top-K matches, shape (K, 2) [latitude, longitude]
+                - similarities: Cosine similarities for top-K matches, shape (K,)
+
+        Raises:
+            RuntimeError: If the reference database has not been built yet.
+        """
+        if self.reference_embeddings is None or self.reference_coordinates is None:
+            raise RuntimeError(
+                "Reference database has not been built. Call build_reference_database() first."
+            )
+
+        # Encode query image
+        query_embedding = self.encode_image(query_image, device=device)
+
+        # Retrieve top-K similar embeddings
+        top_indices, top_similarities = self.retrieve_similar(
+            query_embedding,
+            self.reference_embeddings,
+            top_k=top_k,
+        )
+
+        # Get corresponding coordinates
+        top_coordinates = self.reference_coordinates[top_indices]
+
+        return top_coordinates, top_similarities
+
+    @staticmethod
+    def gps_to_utm(
+        lat: float,
+        lon: float,
+    ) -> tuple[float, float, int, str]:
+        """Convert GPS coordinates to UTM coordinates.
+
+        Args:
+            lat: Latitude in degrees.
+            lon: Longitude in degrees.
+
+        Returns:
+            Tuple of (easting, northing, zone_number, zone_letter) in meters.
+
+        Raises:
+            ImportError: If utm package is not installed.
+        """
+        if not UTM_AVAILABLE:
+            raise ImportError(
+                "utm package is required for UTM conversion. Install it with: pip install utm"
+            )
+        easting, northing, zone_number, zone_letter = utm.from_latlon(lat, lon)
+        return float(easting), float(northing), zone_number, zone_letter
+
+    @staticmethod
+    def utm_to_gps(
+        easting: float,
+        northing: float,
+        zone_number: int,
+        zone_letter: str,
+    ) -> tuple[float, float]:
+        """Convert UTM coordinates to GPS coordinates.
+
+        Args:
+            easting: UTM easting in meters.
+            northing: UTM northing in meters.
+            zone_number: UTM zone number.
+            zone_letter: UTM zone letter.
+
+        Returns:
+            Tuple of (latitude, longitude) in degrees.
+
+        Raises:
+            ImportError: If utm package is not installed.
+        """
+        if not UTM_AVAILABLE:
+            raise ImportError(
+                "utm package is required for UTM conversion. Install it with: pip install utm"
+            )
+        lat, lon = utm.to_latlon(easting, northing, zone_number, zone_letter)
+        return float(lat), float(lon)
+
+    @staticmethod
+    def gps_to_local_xy(
+        lat: float,
+        lon: float,
+        origin_lat: float,
+        origin_lon: float,
+    ) -> tuple[float, float]:
+        """Convert GPS coordinates to local XY coordinates.
+
+        Uses a local tangent plane approximation (ENU frame) centered at the origin.
+        This is accurate for distances up to ~10km from the origin.
+
+        Args:
+            lat: Latitude in degrees.
+            lon: Longitude in degrees.
+            origin_lat: Origin latitude in degrees.
+            origin_lon: Origin longitude in degrees.
+
+        Returns:
+            Tuple of (x, y) in meters, where:
+                - x is positive East
+                - y is positive North
+        """
+        # Earth radius in meters
+        R = 6371000.0
+
+        # Convert to radians
+        lat_rad = np.radians(lat)
+        lon_rad = np.radians(lon)
+        origin_lat_rad = np.radians(origin_lat)
+        origin_lon_rad = np.radians(origin_lon)
+
+        # Local tangent plane approximation
+        dlat = lat_rad - origin_lat_rad
+        dlon = lon_rad - origin_lon_rad
+
+        # Convert to meters
+        x = R * dlon * np.cos(origin_lat_rad)  # East
+        y = R * dlat  # North
+
+        return float(x), float(y)
+
+    @staticmethod
+    def local_xy_to_gps(
+        x: float,
+        y: float,
+        origin_lat: float,
+        origin_lon: float,
+    ) -> tuple[float, float]:
+        """Convert local XY coordinates to GPS coordinates.
+
+        Uses a local tangent plane approximation (ENU frame).
+
+        Args:
+            x: X coordinate in meters (East).
+            y: Y coordinate in meters (North).
+            origin_lat: Origin latitude in degrees.
+            origin_lon: Origin longitude in degrees.
+
+        Returns:
+            Tuple of (latitude, longitude) in degrees.
+        """
+        # Earth radius in meters
+        R = 6371000.0
+
+        # Convert to radians
+        origin_lat_rad = np.radians(origin_lat)
+        origin_lon_rad = np.radians(origin_lon)
+
+        # Convert from meters to radians
+        dlat = y / R
+        dlon = x / (R * np.cos(origin_lat_rad))
+
+        # Compute final coordinates
+        lat_rad = origin_lat_rad + dlat
+        lon_rad = origin_lon_rad + dlon
+
+        # Convert to degrees
+        lat = np.degrees(lat_rad)
+        lon = np.degrees(lon_rad)
+
+        return float(lat), float(lon)
+
+    def similarity_to_covariance(
+        self,
+        similarities: np.ndarray,
+        base_position_std: float = 5.0,
+        min_position_std: float = 1.0,
+    ) -> np.ndarray:
+        """Estimate position covariance matrix from similarity scores.
+
+        Higher similarity scores result in lower uncertainty (smaller covariance).
+        Uses the top match similarity to estimate uncertainty.
+
+        Note: CVGL provides position-only measurements. Heading comes from IMU.
+
+        Args:
+            similarities: Array of similarity scores (K,) in range [-1, 1].
+            base_position_std: Base standard deviation for position when similarity is 0 (meters).
+            min_position_std: Minimum position std dev at perfect similarity (meters).
+
+        Returns:
+            2x2 covariance matrix for (x, y) position.
+        """
+        # Use top match similarity to estimate uncertainty
+        top_similarity = similarities[0]
+
+        # Map similarity [0, 1] to uncertainty
+        # similarity = 1.0 → minimum uncertainty
+        # similarity = 0.0 → base uncertainty
+        # Clamp similarity to [0, 1] range (cosine similarity can be negative)
+        confidence = np.clip(top_similarity, 0.0, 1.0)
+
+        # Linear interpolation between base and minimum uncertainty
+        position_std = base_position_std - confidence * (base_position_std - min_position_std)
+
+        # Create diagonal 2x2 covariance matrix for position
+        covariance = np.diag([position_std**2, position_std**2])
+
+        return covariance
+
+    @torch.no_grad()  # type: ignore[untyped-decorator]
+    def query_database_as_measurement(
+        self,
+        query_image: np.ndarray,
+        timestamp: float,
+        top_k: int = 5,
+        device: torch.device | None = None,
+        use_weighted_average: bool = True,
+        base_position_std: float = 5.0,
+        current_yaw: float | None = None,
+    ) -> CVGLMeasurement:
+        """Query database and return result as CVGLMeasurement for pose graph.
+
+        This method combines query_database with coordinate conversion and
+        covariance estimation to produce a POSITION-ONLY measurement ready
+        for insertion into the GTSAM pose graph.
+
+        Note: CVGL only provides position (x, y) measurements. Heading should
+        come from IMU integration, not from visual localization.
+
+        Args:
+            query_image: Query image as numpy array (H, W, 3) in RGB, [0, 255].
+            timestamp: Timestamp of the measurement.
+            top_k: Number of top results to consider for position estimation.
+            device: Device to run inference on. If None, uses model's current device.
+            use_weighted_average: If True, compute position as weighted average of top-K matches.
+                If False, use only the top match.
+            base_position_std: Base standard deviation for position uncertainty (meters).
+            current_yaw: Optional current heading from IMU (radians). Stored but not used
+                for measurement (position-only measurement).
+
+        Returns:
+            CVGLMeasurement object with position-only measurement.
+
+        Raises:
+            RuntimeError: If the reference database has not been built yet.
+        """
+        if self.reference_embeddings is None or self.reference_coordinates is None:
+            raise RuntimeError(
+                "Reference database has not been built. Call build_reference_database() first."
+            )
+
+        if self.reference_origin is None:
+            raise RuntimeError("Reference origin not set. This should not happen.")
+
+        # Query the database
+        top_gps_coords, top_similarities = self.query_database(
+            query_image=query_image,
+            top_k=top_k,
+            device=device,
+        )
+
+        # Estimate position in metric coordinates (UTM or local XY)
+        if self.use_utm:
+            # Use UTM coordinates
+            if use_weighted_average and top_k > 1:
+                # Compute weighted average of top-K matches
+                weights = np.clip(top_similarities, 0.0, 1.0)
+                weights = weights / (weights.sum() + 1e-8)  # Normalize
+
+                # Convert all top-K GPS to UTM
+                utm_positions = []
+                for i in range(len(top_gps_coords)):
+                    easting, northing, _, _ = self.gps_to_utm(
+                        lat=top_gps_coords[i, 0],
+                        lon=top_gps_coords[i, 1],
+                    )
+                    utm_positions.append([easting, northing])
+
+                utm_positions = np.array(utm_positions)
+
+                # Weighted average in UTM space
+                position = np.average(utm_positions, axis=0, weights=weights)
+            else:
+                # Use only top match
+                easting, northing, _, _ = self.gps_to_utm(
+                    lat=top_gps_coords[0, 0],
+                    lon=top_gps_coords[0, 1],
+                )
+                position = np.array([easting, northing])
+        else:
+            # Use local tangent plane coordinates
+            if self.reference_origin is None:
+                raise RuntimeError("Reference origin not set for local coordinate conversion.")
+
+            if use_weighted_average and top_k > 1:
+                # Compute weighted average of top-K matches
+                weights = np.clip(top_similarities, 0.0, 1.0)
+                weights = weights / (weights.sum() + 1e-8)  # Normalize
+
+                # Convert all top-K GPS to local XY
+                local_positions = []
+                for i in range(len(top_gps_coords)):
+                    x, y = self.gps_to_local_xy(
+                        lat=top_gps_coords[i, 0],
+                        lon=top_gps_coords[i, 1],
+                        origin_lat=self.reference_origin[0],
+                        origin_lon=self.reference_origin[1],
+                    )
+                    local_positions.append([x, y])
+
+                local_positions = np.array(local_positions)
+
+                # Weighted average
+                position = np.average(local_positions, axis=0, weights=weights)
+            else:
+                # Use only top match
+                position_x, position_y = self.gps_to_local_xy(
+                    lat=top_gps_coords[0, 0],
+                    lon=top_gps_coords[0, 1],
+                    origin_lat=self.reference_origin[0],
+                    origin_lon=self.reference_origin[1],
+                )
+                position = np.array([position_x, position_y])
+
+        # Estimate position covariance from similarity scores
+        # CVGL provides position-only measurements (no heading)
+        position_covariance = self.similarity_to_covariance(
+            similarities=top_similarities,
+            base_position_std=base_position_std,
+        )
+
+        # Create CVGLMeasurement (position-only)
+        measurement = CVGLMeasurement(
+            timestamp=timestamp,
+            position=position,
+            position_covariance=position_covariance,
+            confidence=float(np.clip(top_similarities[0], 0.0, 1.0)),
+            num_inliers=top_k,  # Use top_k as a proxy for inliers
+            yaw=current_yaw,  # Store current yaw from IMU (not estimated)
+            image_id=None,
+        )
+
+        return measurement
 
 
 if __name__ == "__main__":

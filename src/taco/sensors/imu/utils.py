@@ -33,6 +33,176 @@ class TurnDetection:
     exit_angles: npt.NDArray[np.float64]
 
 
+def _preprocess_gyro_data(
+    gyro_z: npt.NDArray[np.float64] | torch.Tensor,
+    dt: float | npt.NDArray[np.float64] | torch.Tensor,
+    smooth_window: int,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Preprocess gyro data: convert tensors, flatten, and smooth."""
+    # Convert torch tensors to numpy
+    if isinstance(gyro_z, torch.Tensor):
+        gyro_z = gyro_z.cpu().numpy()
+    if isinstance(dt, torch.Tensor):
+        dt = dt.cpu().numpy()
+
+    # Flatten if needed
+    gyro_z = np.asarray(gyro_z).flatten()
+    dt_arr = np.asarray(dt).flatten()
+
+    # Handle scalar dt
+    if dt_arr.size == 1:
+        dt_scalar = float(dt_arr[0])
+        dt_arr = np.full(len(gyro_z), dt_scalar)
+
+    # Smooth the yaw rate to reduce noise
+    if smooth_window > 1:
+        yaw_rate_smooth = uniform_filter1d(gyro_z, size=smooth_window, mode="nearest")
+    else:
+        yaw_rate_smooth = gyro_z.copy()
+
+    yaw_rate_abs = np.abs(yaw_rate_smooth)
+
+    return yaw_rate_smooth, yaw_rate_abs, dt_arr
+
+
+def _validate_turn(
+    start: int,
+    end: int,
+    apex: int,
+    n: int,
+    min_turn_duration: int,
+    min_turn_angle: float,
+    sign_consistency: float,
+    dt_arr: npt.NDArray[np.float64],
+    yaw_rate_smooth: npt.NDArray[np.float64],
+    absolute_heading: npt.NDArray[np.float64],
+    exit_heading_lookahead: int,
+) -> tuple[bool, float, float, float]:
+    """Validate a turn and return whether to keep it along with key metrics.
+
+    Returns:
+        Tuple of (is_valid, net_angle, entry_heading, exit_heading)
+    """
+    # Ensure valid range
+    start = max(0, start)
+    end = min(n - 1, end)
+
+    # Duration check
+    if end - start + 1 < min_turn_duration:
+        return False, 0.0, 0.0, 0.0
+
+    # Calculate net heading change over the turn
+    segment_dt = dt_arr[start : end + 1]
+    segment_yaw_rate = yaw_rate_smooth[start : end + 1]
+    net_angle = np.sum(segment_yaw_rate * segment_dt)
+
+    # Minimum turn angle check
+    if np.abs(net_angle) < min_turn_angle:
+        return False, net_angle, 0.0, 0.0
+
+    # Sign consistency check
+    turn_sign = np.sign(net_angle)
+    same_sign_count = np.sum(np.sign(segment_yaw_rate) == turn_sign)
+    consistency = same_sign_count / len(segment_yaw_rate)
+    if consistency < sign_consistency:
+        return False, net_angle, 0.0, 0.0
+
+    # Calculate entry and exit headings
+    entry_heading = absolute_heading[start]
+    exit_idx = min(apex + exit_heading_lookahead, n - 1)
+    exit_heading = absolute_heading[exit_idx]
+
+    return True, net_angle, entry_heading, exit_heading
+
+
+def _process_apex_candidates(
+    apex_indices: npt.NDArray[np.int64],
+    n: int,
+    yaw_rate_abs: npt.NDArray[np.float64],
+    edge_threshold: float,
+    edge_hold_samples: int,
+    min_turn_duration: int,
+    min_turn_angle: float,
+    sign_consistency: float,
+    dt_arr: npt.NDArray[np.float64],
+    yaw_rate_smooth: npt.NDArray[np.float64],
+    absolute_heading: npt.NDArray[np.float64],
+    exit_heading_lookahead: int,
+    min_apex_distance: int,
+    cumulative_yaw: npt.NDArray[np.float64],
+) -> TurnDetection:
+    """Process all apex candidates and return validated turns."""
+
+    def find_turn_edge(idx: int, step: int) -> int:
+        """Find turn start/end by walking until yaw rate drops below threshold."""
+        j = idx
+        below_count = 0
+        while 0 <= j < n:
+            if yaw_rate_abs[j] < edge_threshold:
+                below_count += 1
+                if below_count >= edge_hold_samples:
+                    return j - (edge_hold_samples - 1) * abs(step)
+            else:
+                below_count = 0
+            j += step
+        return 0 if step < 0 else n - 1
+
+    valid_apexes: list[int] = []
+    valid_starts: list[int] = []
+    valid_ends: list[int] = []
+    entry_angles: list[float] = []
+    exit_angles: list[float] = []
+
+    for apex in apex_indices:
+        # Find turn boundaries
+        start = find_turn_edge(apex - 1, step=-1)
+        end = find_turn_edge(apex + 1, step=+1)
+
+        # Validate turn
+        is_valid, net_angle, entry_heading, exit_heading = _validate_turn(
+            start=start,
+            end=end,
+            apex=apex,
+            n=n,
+            min_turn_duration=min_turn_duration,
+            min_turn_angle=min_turn_angle,
+            sign_consistency=sign_consistency,
+            dt_arr=dt_arr,
+            yaw_rate_smooth=yaw_rate_smooth,
+            absolute_heading=absolute_heading,
+            exit_heading_lookahead=exit_heading_lookahead,
+        )
+
+        if not is_valid:
+            continue
+
+        # Check for overlap with previous turn
+        if valid_apexes and apex - valid_apexes[-1] < min_apex_distance:
+            # Keep the one with larger angle change
+            prev_angle = cumulative_yaw[valid_ends[-1]] - cumulative_yaw[valid_starts[-1]]
+            if np.abs(net_angle) > np.abs(prev_angle):
+                valid_apexes[-1] = apex
+                valid_starts[-1] = start
+                valid_ends[-1] = end
+                entry_angles[-1] = entry_heading
+                exit_angles[-1] = exit_heading
+            continue
+
+        valid_apexes.append(apex)
+        valid_starts.append(start)
+        valid_ends.append(end)
+        entry_angles.append(entry_heading)
+        exit_angles.append(exit_heading)
+
+    return TurnDetection(
+        apex_indices=np.array(valid_apexes, dtype=np.int64),
+        start_indices=np.array(valid_starts, dtype=np.int64),
+        end_indices=np.array(valid_ends, dtype=np.int64),
+        entry_angles=np.array(entry_angles, dtype=np.float64),
+        exit_angles=np.array(exit_angles, dtype=np.float64),
+    )
+
+
 def detect_corners_from_gyro(
     gyro_z: npt.NDArray[np.float64] | torch.Tensor,
     dt: float | npt.NDArray[np.float64] | torch.Tensor = 0.1,
@@ -96,31 +266,9 @@ def detect_corners_from_gyro(
         >>> turns = detect_corners_from_gyro(gyro_z, dt, initial_heading=initial_yaw)
         >>> print(f"Found {len(turns.apex_indices)} corners")
     """
-    # Convert torch tensors to numpy
-    if isinstance(gyro_z, torch.Tensor):
-        gyro_z = gyro_z.cpu().numpy()
-    if isinstance(dt, torch.Tensor):
-        dt = dt.cpu().numpy()
-
-    # Flatten if needed
-    gyro_z = np.asarray(gyro_z).flatten()
-    dt_arr = np.asarray(dt).flatten()
-
-    # Handle scalar dt
-    if dt_arr.size == 1:
-        dt_scalar = float(dt_arr[0])
-        dt_arr = np.full(len(gyro_z), dt_scalar)
-
-    n = len(gyro_z)
-
-    # Smooth the yaw rate to reduce noise
-    if smooth_window > 1:
-        yaw_rate_smooth = uniform_filter1d(gyro_z, size=smooth_window, mode="nearest")
-    else:
-        yaw_rate_smooth = gyro_z.copy()
-
-    # Absolute yaw rate for peak detection
-    yaw_rate_abs = np.abs(yaw_rate_smooth)
+    # Preprocess gyro data
+    yaw_rate_smooth, yaw_rate_abs, dt_arr = _preprocess_gyro_data(gyro_z, dt, smooth_window)
+    n = len(yaw_rate_smooth)
 
     # Find peaks in absolute yaw rate - these are the apex points
     apex_indices, _ = find_peaks(
@@ -130,98 +278,33 @@ def detect_corners_from_gyro(
         prominence=peak_prominence,
     )
 
-    # If apex_indices is within 10 of the end, remove it (incomplete turn)
+    # Remove incomplete turns near the end
     apex_indices = apex_indices[apex_indices < n - turn_latency]
 
     # Integrate yaw rate to get cumulative heading (relative to start)
     cumulative_yaw = np.zeros(n)
     for i in range(1, n):
-        # Gyro z is positive for left turns, so subtract to get heading
         cumulative_yaw[i] = cumulative_yaw[i - 1] - yaw_rate_smooth[i] * dt_arr[i]
 
     # Add initial heading to get absolute world heading
     absolute_heading = cumulative_yaw + initial_heading
 
-    def find_turn_edge(idx: int, step: int) -> int:
-        """Find turn start/end by walking until yaw rate drops below threshold."""
-        j = idx
-        below_count = 0
-        while 0 <= j < n:
-            if yaw_rate_abs[j] < edge_threshold:
-                below_count += 1
-                if below_count >= edge_hold_samples:
-                    return j - (edge_hold_samples - 1) * abs(step)
-            else:
-                below_count = 0
-            j += step
-        return 0 if step < 0 else n - 1
-
-    # Validate each apex and find turn boundaries
-    valid_apexes = []
-    valid_starts = []
-    valid_ends = []
-    entry_angles = []
-    exit_angles = []
-
-    for apex in apex_indices:
-        # Find turn boundaries (used for validation, not for output index)
-        start = find_turn_edge(apex - 1, step=-1)
-        end = find_turn_edge(apex + 1, step=+1)
-
-        # Ensure valid range
-        start = max(0, start)
-        end = min(n - 1, end)
-
-        # Duration check
-        if end - start + 1 < min_turn_duration:
-            continue
-
-        # Calculate net heading change over the turn
-        segment_dt = dt_arr[start : end + 1]
-        segment_yaw_rate = yaw_rate_smooth[start : end + 1]
-        net_angle = np.sum(segment_yaw_rate * segment_dt)
-
-        # Minimum turn angle check
-        if np.abs(net_angle) < min_turn_angle:
-            continue
-
-        # Sign consistency check - most samples should rotate same direction
-        turn_sign = np.sign(net_angle)
-        same_sign_count = np.sum(np.sign(segment_yaw_rate) == turn_sign)
-        consistency = same_sign_count / len(segment_yaw_rate)
-        if consistency < sign_consistency:
-            continue
-
-        # Exit heading: absolute heading shortly after the apex
-        # This gives the direction of travel as you exit the corner
-        exit_idx = min(apex + exit_heading_lookahead, n - 1)
-        exit_heading = absolute_heading[exit_idx]
-
-        # Check for overlap with previous turn (based on apex proximity)
-        if valid_apexes and apex - valid_apexes[-1] < min_apex_distance:
-            # Overlapping turn - keep the one with larger angle change
-            if np.abs(net_angle) > np.abs(
-                cumulative_yaw[valid_ends[-1]] - cumulative_yaw[valid_starts[-1]]
-            ):
-                valid_apexes[-1] = apex
-                valid_starts[-1] = start
-                valid_ends[-1] = end
-                entry_angles[-1] = absolute_heading[start]
-                exit_angles[-1] = exit_heading
-            continue
-
-        valid_apexes.append(apex)
-        valid_starts.append(start)
-        valid_ends.append(end)
-        entry_angles.append(absolute_heading[start])
-        exit_angles.append(exit_heading)
-
-    return TurnDetection(
-        apex_indices=np.array(valid_apexes, dtype=np.int64),
-        start_indices=np.array(valid_starts, dtype=np.int64),
-        end_indices=np.array(valid_ends, dtype=np.int64),
-        entry_angles=np.array(entry_angles, dtype=np.float64),
-        exit_angles=np.array(exit_angles, dtype=np.float64),
+    # Process all apex candidates and return validated turns
+    return _process_apex_candidates(
+        apex_indices=apex_indices,
+        n=n,
+        yaw_rate_abs=yaw_rate_abs,
+        edge_threshold=edge_threshold,
+        edge_hold_samples=edge_hold_samples,
+        min_turn_duration=min_turn_duration,
+        min_turn_angle=min_turn_angle,
+        sign_consistency=sign_consistency,
+        dt_arr=dt_arr,
+        yaw_rate_smooth=yaw_rate_smooth,
+        absolute_heading=absolute_heading,
+        exit_heading_lookahead=exit_heading_lookahead,
+        min_apex_distance=min_apex_distance,
+        cumulative_yaw=cumulative_yaw,
     )
 
 
@@ -400,6 +483,6 @@ def filter_close_corners(
         apex_indices=turns.apex_indices[keep_mask],
         start_indices=turns.start_indices[keep_mask],
         end_indices=turns.end_indices[keep_mask],
-        turn_directions=turns.turn_directions[keep_mask],
+        entry_angles=turns.entry_angles[keep_mask],
         exit_angles=turns.exit_angles[keep_mask],
     )
