@@ -208,8 +208,8 @@ class ImageRetrievalModel(L.LightningModule):
         loss = triplet_loss + 0.5 * contrastive_loss
 
         # Log metrics
-        self.log("train/triplet_loss", triplet_loss, prog_bar=True)
-        self.log("train/contrastive_loss", contrastive_loss, prog_bar=True)
+        self.log("train/triplet_loss", triplet_loss)
+        self.log("train/contrastive_loss", contrastive_loss)
         self.log("train/loss", loss, prog_bar=True)
 
         return loss
@@ -301,17 +301,17 @@ class ImageRetrievalModel(L.LightningModule):
         recall_at_k = self.compute_recall_at_k(query_emb, reference_emb, k_values=(1, 5, 10))
 
         # Log metrics
-        self.log("val/triplet_loss", triplet_loss, prog_bar=True)
-        self.log("val/contrastive_loss", contrastive_loss, prog_bar=True)
+        self.log("val/triplet_loss", triplet_loss)
+        self.log("val/contrastive_loss", contrastive_loss)
         self.log("val/loss", loss, prog_bar=True)
-        self.log("val/accuracy", accuracy, prog_bar=True)
+        self.log("val/accuracy", accuracy)
         self.log("val/pos_distance", pos_distance.mean())
         self.log("val/neg_distance", neg_distance.mean())
 
         # Log recall@K metrics as percentages in progress bar
-        self.log("val/recall@1", recall_at_k[1] * 100, prog_bar=True)
-        self.log("val/recall@5", recall_at_k[5] * 100, prog_bar=True)
-        self.log("val/recall@10", recall_at_k[10] * 100, prog_bar=True)
+        self.log("val@1", recall_at_k[1] * 100, prog_bar=True)
+        self.log("val@5", recall_at_k[5] * 100, prog_bar=True)
+        self.log("val@10", recall_at_k[10] * 100, prog_bar=True)
 
         return loss
 

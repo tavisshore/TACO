@@ -440,13 +440,13 @@ class CVUSADataset(Dataset):
         time.sleep(0.3)
 
         self.samples = batches
-        print("idx_pool:", len(idx_pool))
-        print(f"Original Length: {len(self.train_ids)} - Length after Shuffle: {len(self.samples)}")
-        print("Break Counter:", break_counter)
-        print(
-            f"Pairs left out of last batch to avoid creating noise: {len(self.train_ids) - len(self.samples)}"
-        )
-        print(f"First Element ID: {self.samples[0]} - Last Element ID: {self.samples[-1]}")
+        # print("idx_pool:", len(idx_pool))
+        # print(f"Original Length: {len(self.train_ids)} - Length after Shuffle: {len(self.samples)}")
+        # print("Break Counter:", break_counter)
+        # print(
+        #     f"Pairs left out of last batch to avoid creating noise: {len(self.train_ids) - len(self.samples)}"
+        # )
+        # print(f"First Element ID: {self.samples[0]} - Last Element ID: {self.samples[-1]}")
 
 
 # Backward compatibility aliases

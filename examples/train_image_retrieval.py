@@ -7,6 +7,7 @@ import lightning as L
 import torch
 import torch.nn.functional as F
 from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from lightning.pytorch.loggers import WandbLogger
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -212,7 +213,6 @@ def main():
     # Create model
     print("\nCreating model...")
     model = ImageRetrievalModel(config=model_config)
-
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
     # Create callbacks
@@ -227,7 +227,7 @@ def main():
 
     early_stop = EarlyStopping(
         monitor="val/loss",
-        patience=10,
+        patience=25,
         mode="min",
     )
 
@@ -239,6 +239,28 @@ def main():
         neighbour_range=128,  # Range of top neighbors to sample from
     )
 
+    # Initialize Weights & Biases logger
+    wandb_logger = WandbLogger(
+        project="taco",
+        name="initial",
+        log_model="all",  # Log model checkpoints to W&B
+        save_dir="output/wandb",
+    )
+
+    # Log hyperparameters to W&B
+    wandb_logger.experiment.config.update(
+        {
+            "embedding_dim": model_config.embedding_dim,
+            "learning_rate": model_config.learning_rate,
+            "temperature": model_config.temperature,
+            "margin": model_config.margin,
+            "freeze_backbone": model_config.freeze_backbone,
+            "batch_size": 32,
+            "train_size": len(train_dataset),
+            "val_size": len(val_dataset),
+        }
+    )
+
     # Create trainer
     print("\nStarting training...")
     trainer = L.Trainer(
@@ -246,7 +268,8 @@ def main():
         accelerator="auto",
         devices=1,
         callbacks=[checkpoint_callback, early_stop, shuffle_callback],
-        log_every_n_steps=10,
+        logger=wandb_logger,
+        check_val_every_n_epoch=4,
     )
 
     # Train
