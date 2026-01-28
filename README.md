@@ -7,7 +7,7 @@
 
 **TACO** is a Python library for pose graph optimisation that fuses **IMU (Inertial Measurement Unit)** data with **CVGL (Cross-View Geo-Localisation)** image-based measurements for robust 6-DOF pose estimation.
 
-Built on [**GTSAM (Georgia Tech Smoothing and Mapping)**](https://gtsam.org/), TACO provides a high-level interface for creating and optimising pose graphs with modern optimisation algorithms.
+Built on [GTSAM (Georgia Tech Smoothing and Mapping)](https://gtsam.org/).
 
 <!-- ## Features
 ### Core Functionality
@@ -27,7 +27,7 @@ For development:
 ```bash
 git clone https://github.com/tavisshore/taco.git
 cd taco
-pip install -e ".[dev,docs]"
+pip install -e ".[dev]"
 pre-commit install
 ```
 
@@ -35,26 +35,21 @@ pre-commit install
 ### TODO
 
 ### Running Tests
-
 ```bash
 pytest
 ```
 
 With coverage:
-
 ```bash
 pytest --cov=taco --cov-report=html
 ```
 
 ### Code Quality
-
 ```bash
 # Format code
 black src tests
-
 # Lint code
 ruff check src tests
-
 # Type checking
 mypy src
 ```
