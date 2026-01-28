@@ -51,11 +51,12 @@ def initialize_cvgl_model(checkpoint_path: Path) -> tuple[ImageRetrievalModel, t
             learning_rate=1e-4,
             temperature=0.07,
             loss_type="ntxent",
+            weights_path="weights/sample4geo/cvusa/convnext_base.fb_in22k_ft_in1k_384/weights_e40_98.6830.pth",
         )
         # Create model with Sample4Geo encoder (default recommended)
         cvgl_model = ImageRetrievalModel.from_sample4geo(
             config=cvgl_config,
-            model_name="resnet50",  # Use ResNet50 as default
+            model_name="convnext_base.fb_in22k_ft_in1k_384",
             pretrained=True,
             img_size=384,
         )
@@ -157,7 +158,7 @@ def main() -> None:
     # Initialize CVGL model
     print("\n2.5. Initialising CVGL localization model...")
     checkpoint_path = Path(
-        "weights/pretrained/cvusa/convnext_base.fb_in22k_ft_in1k_384/weights_e40_98.6830.pth"
+        "weights/sample4geo/cvusa/convnext_base.fb_in22k_ft_in1k_384/weights_e40_98.6830.pth"
     )
     cvgl_model, device = initialize_cvgl_model(checkpoint_path)
 

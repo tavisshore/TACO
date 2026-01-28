@@ -87,6 +87,7 @@ class ImageRetrievalModelConfig:
     scheduler_step_size: int = 30
     scheduler_gamma: float = 0.1
     scheduler_patience: int = 10
+    weights_path: str | None = None
 
 
 class ImageRetrievalModel(L.LightningModule):
@@ -187,11 +188,10 @@ class ImageRetrievalModel(L.LightningModule):
     def from_sample4geo(
         cls,
         config: ImageRetrievalModelConfig,
-        model_name: str = "resnet50",
+        model_name: str = "convnext_base.fb_in22k_ft_in1k_384",
         pretrained: bool = True,
         img_size: int = 384,
         freeze_encoder: bool = False,
-        encoder_weights_path: str | None = None,
     ) -> "ImageRetrievalModel":
         """Create ImageRetrievalModel with Sample4Geo encoder (recommended).
 
@@ -222,7 +222,7 @@ class ImageRetrievalModel(L.LightningModule):
             pretrained=pretrained,
             img_size=img_size,
             freeze=freeze_encoder,
-            weights_path=encoder_weights_path,
+            weights_path=config.weights_path,
         )
         return cls(encoder=encoder, config=config)
 
@@ -1383,7 +1383,7 @@ def create_convnext_encoder(pretrained: bool = True, freeze: bool = False) -> nn
 
 
 def create_sample4geo_encoder(
-    model_name: str = "resnet50",
+    model_name: str = "convnext_base.fb_in22k_ft_in1k_384",
     pretrained: bool = True,
     img_size: int = 384,
     freeze: bool = False,
