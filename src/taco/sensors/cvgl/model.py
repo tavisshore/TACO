@@ -1,12 +1,13 @@
 """PyTorch Lightning model for image retrieval using ConvNeXt."""
 
 from dataclasses import dataclass
-from typing import Any, Tuple
+from typing import Any, Literal, Tuple
 
 import lightning as L
 import numpy as np
 import torch
 import torch.nn.functional as F
+from pytorch_metric_learning import losses
 from torch import Tensor, nn
 from torchvision import models
 
@@ -22,6 +23,7 @@ class ImageRetrievalModelConfig:
         temperature: Temperature for contrastive loss
         margin: Margin for triplet loss
         freeze_backbone: If True, freeze ConvNeXt backbone weights
+        loss_type: Type of loss function to use ('combined', 'ntxent', 'triplet')
     """
 
     embedding_dim: int = 512
@@ -30,6 +32,7 @@ class ImageRetrievalModelConfig:
     temperature: float = 0.07
     margin: float = 0.2
     freeze_backbone: bool = False
+    loss_type: Literal["combined", "ntxent", "triplet"] = "ntxent"
 
 
 class ImageRetrievalModel(L.LightningModule):
@@ -91,6 +94,9 @@ class ImageRetrievalModel(L.LightningModule):
 
         # L2 normalization layer
         self.l2_norm = nn.functional.normalize
+
+        # Initialize NT-Xent loss from pytorch_metric_learning
+        self.ntxent_loss = losses.NTXentLoss(temperature=config.temperature)
 
     def forward(self, images: Tensor) -> Tensor:
         """Forward pass to compute image embeddings.
@@ -173,6 +179,39 @@ class ImageRetrievalModel(L.LightningModule):
 
         return loss
 
+    def compute_ntxent_loss(
+        self,
+        query_emb: Tensor,
+        reference_emb: Tensor,
+        labels: Tensor,
+    ) -> Tensor:
+        """Compute NT-Xent loss using pytorch_metric_learning.
+
+        NT-Xent (Normalized Temperature-scaled Cross Entropy Loss) is a contrastive
+        loss that treats each pair of query-reference images as positives and all
+        other images in the batch as negatives.
+
+        Args:
+            query_emb: Query image embeddings (B, D).
+            reference_emb: Reference image embeddings (B, D).
+            labels: Place labels (B,).
+
+        Returns:
+            NT-Xent loss value.
+        """
+        # Concatenate query and reference embeddings
+        # This creates pairs where query[i] and reference[i] have the same label
+        embeddings = torch.cat([query_emb, reference_emb], dim=0)
+
+        # Duplicate labels for both query and reference
+        # labels[i] corresponds to query_emb[i] and reference_emb[i]
+        labels_combined = torch.cat([labels, labels], dim=0)
+
+        # Compute NT-Xent loss using pytorch_metric_learning
+        loss = self.ntxent_loss(embeddings, labels_combined)
+
+        return loss
+
     def training_step(
         self,
         batch: Tuple[Tensor, Tensor, Tensor],
@@ -193,24 +232,39 @@ class ImageRetrievalModel(L.LightningModule):
         query_emb = self(query_img)  # anchor embeddings (ground view)
         reference_emb = self(reference_img)  # positive embeddings (satellite view)
 
-        # Sample negatives: shift reference embeddings to create mismatched pairs
-        # Since the dataset shuffle ensures unique labels in each batch,
-        # rolling by 1 gives us guaranteed negatives
-        negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
+        # Compute loss based on loss_type configuration
+        if self.config.loss_type == "ntxent":
+            # Use NT-Xent loss only
+            loss = self.compute_ntxent_loss(query_emb, reference_emb, labels)
+            self.log("train/ntxent_loss", loss)
+            self.log("train/loss", loss, prog_bar=True)
 
-        # Compute triplet loss (query as anchor, reference as positive, rolled reference as negative)
-        triplet_loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
+        elif self.config.loss_type == "triplet":
+            # Use triplet loss only
+            negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
+            loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
+            self.log("train/triplet_loss", loss)
+            self.log("train/loss", loss, prog_bar=True)
 
-        # Compute contrastive loss on query embeddings
-        contrastive_loss = self.compute_contrastive_loss(query_emb, labels)
+        else:  # self.config.loss_type == "combined"
+            # Sample negatives: shift reference embeddings to create mismatched pairs
+            # Since the dataset shuffle ensures unique labels in each batch,
+            # rolling by 1 gives us guaranteed negatives
+            negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
 
-        # Combined loss
-        loss = triplet_loss + 0.5 * contrastive_loss
+            # Compute triplet loss (query as anchor, reference as positive, rolled reference as negative)
+            triplet_loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
 
-        # Log metrics
-        self.log("train/triplet_loss", triplet_loss)
-        self.log("train/contrastive_loss", contrastive_loss)
-        self.log("train/loss", loss, prog_bar=True)
+            # Compute contrastive loss on query embeddings
+            contrastive_loss = self.compute_contrastive_loss(query_emb, labels)
+
+            # Combined loss
+            loss = triplet_loss + 0.5 * contrastive_loss
+
+            # Log metrics
+            self.log("train/triplet_loss", triplet_loss)
+            self.log("train/contrastive_loss", contrastive_loss)
+            self.log("train/loss", loss, prog_bar=True)
 
         return loss
 
@@ -283,16 +337,35 @@ class ImageRetrievalModel(L.LightningModule):
         # Sample negatives: shift reference embeddings to create mismatched pairs
         negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
 
-        # Compute triplet loss
-        triplet_loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
+        # Compute loss based on loss_type configuration
+        if self.config.loss_type == "ntxent":
+            # Use NT-Xent loss only
+            loss = self.compute_ntxent_loss(query_emb, reference_emb, labels)
+            self.log("val/ntxent_loss", loss)
+            self.log("val/loss", loss, prog_bar=True)
 
-        # Compute contrastive loss
-        contrastive_loss = self.compute_contrastive_loss(query_emb, labels)
+        elif self.config.loss_type == "triplet":
+            # Use triplet loss only
+            loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
+            self.log("val/triplet_loss", loss)
+            self.log("val/loss", loss, prog_bar=True)
 
-        # Combined loss
-        loss = triplet_loss + 0.5 * contrastive_loss
+        else:  # self.config.loss_type == "combined"
+            # Compute triplet loss
+            triplet_loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
 
-        # Compute metrics
+            # Compute contrastive loss
+            contrastive_loss = self.compute_contrastive_loss(query_emb, labels)
+
+            # Combined loss
+            loss = triplet_loss + 0.5 * contrastive_loss
+
+            # Log metrics
+            self.log("val/triplet_loss", triplet_loss)
+            self.log("val/contrastive_loss", contrastive_loss)
+            self.log("val/loss", loss, prog_bar=True)
+
+        # Compute metrics (independent of loss type)
         pos_distance = F.pairwise_distance(query_emb, reference_emb, p=2)
         neg_distance = F.pairwise_distance(query_emb, negative_emb, p=2)
         accuracy = (pos_distance < neg_distance).float().mean()
@@ -301,9 +374,6 @@ class ImageRetrievalModel(L.LightningModule):
         recall_at_k = self.compute_recall_at_k(query_emb, reference_emb, k_values=(1, 5, 10))
 
         # Log metrics
-        self.log("val/triplet_loss", triplet_loss)
-        self.log("val/contrastive_loss", contrastive_loss)
-        self.log("val/loss", loss, prog_bar=True)
         self.log("val/accuracy", accuracy)
         self.log("val/pos_distance", pos_distance.mean())
         self.log("val/neg_distance", neg_distance.mean())
@@ -437,7 +507,7 @@ if __name__ == "__main__":
     # Example usage
     import numpy as np
 
-    # Create configuration
+    # Create configuration with NT-Xent loss
     config = ImageRetrievalModelConfig(
         embedding_dim=512,
         pretrained=True,
@@ -445,11 +515,12 @@ if __name__ == "__main__":
         temperature=0.07,
         margin=0.2,
         freeze_backbone=False,
+        loss_type="ntxent",  # Options: "combined", "ntxent", "triplet"
     )
 
     # Create model with config
     model = ImageRetrievalModel(config)
-    print(f"Model created with embedding_dim={config.embedding_dim}")
+    print(f"Model created with embedding_dim={config.embedding_dim}, loss_type={config.loss_type}")
 
     # Test forward pass
     dummy_image = torch.randn(2, 3, 224, 224)

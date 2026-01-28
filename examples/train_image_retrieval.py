@@ -183,6 +183,7 @@ def main():
     model_config = ImageRetrievalModelConfig(
         embedding_dim=512,
         learning_rate=1e-4,
+        loss_type="ntxent",  # Options: "combined", "ntxent", "triplet"
     )
 
     # Create datasets
@@ -255,6 +256,7 @@ def main():
             "temperature": model_config.temperature,
             "margin": model_config.margin,
             "freeze_backbone": model_config.freeze_backbone,
+            "loss_type": model_config.loss_type,
             "batch_size": 32,
             "train_size": len(train_dataset),
             "val_size": len(val_dataset),
@@ -269,7 +271,7 @@ def main():
         devices=1,
         callbacks=[checkpoint_callback, early_stop, shuffle_callback],
         logger=wandb_logger,
-        check_val_every_n_epoch=4,
+        check_val_every_n_epoch=2,
     )
 
     # Train

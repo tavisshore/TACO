@@ -45,7 +45,7 @@ class CVUSADatasetConfig:
 
     data_folder: Path = Path("/scratch/datasets/CVUSA/files")
     stage: str = "train"
-    mode: str = "triplet"
+    mode: str = "triplet"  # Options: "triplet", "query", "reference"
     transforms_query: object | None = None
     transforms_reference: object | None = None
     prob_flip: float = 0.0
@@ -54,7 +54,7 @@ class CVUSADatasetConfig:
     use_gnomonic_projection: bool = True
     gnomonic_fov_deg: float = 120.0
     gnomonic_output_shape: Tuple[int, int] = (224, 224)
-    random_heading: bool = True
+    random_heading: bool = False
     random_pitch: bool = False
     pitch_range: Tuple[float, float] = (-10.0, 10.0)
     eval_heading_deg: float = 0.0

@@ -39,6 +39,7 @@ cvgl = [
     "torchvision>=0.15.0",
     "lightning>=2.0.0",
     "pillow>=10.0.0",
+    "pytorch-metric-learning>=2.0.0",
 ]
 kitti = [
     "pykitti>=0.3.1",
