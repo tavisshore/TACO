@@ -39,6 +39,7 @@ class CVUSADataset(Dataset):
         eval_heading_deg: Not used (heading from CSV is used instead)
         eval_pitch_deg: Not used (kept for compatibility)
         heading_csv_offset: Offset to add to image ID when indexing into all.csv (default: 0)
+        rotate_reference_by_heading: If True, rotates satellite reference image by gt_heading_deg
     """
 
     def __init__(
@@ -60,6 +61,7 @@ class CVUSADataset(Dataset):
         eval_heading_deg=0.0,
         eval_pitch_deg=0.0,
         heading_csv_offset=0,
+        rotate_reference_by_heading=True,
     ):
         super().__init__()
 
@@ -90,6 +92,7 @@ class CVUSADataset(Dataset):
         self.transforms_query = transforms_query  # ground
         self.transforms_reference = transforms_reference  # satellite
         self.heading_csv_offset = heading_csv_offset
+        self.rotate_reference_by_heading = rotate_reference_by_heading
 
         # Load heading metadata from all.csv
         # Image IDs in filenames (e.g., 0041073.jpg -> ID 41073) map to row (ID + offset) in all.csv
@@ -159,11 +162,17 @@ class CVUSADataset(Dataset):
         reference_img = cv2.imread(f"{self.data_folder}/{sat}")
         reference_img = cv2.cvtColor(reference_img, cv2.COLOR_BGR2RGB)
 
+        # Get the ground truth heading from the metadata
+        gt_heading_deg = (
+            self.idx2heading.get(idx - 1, 0.0) + 180
+        ) % 360.0  # Adjust for image ID offset
+
+        # Optionally rotate reference image by ground truth heading
+        if self.rotate_reference_by_heading:
+            reference_img = self._rotate_image_by_heading(reference_img, gt_heading_deg)
+
         # Apply horizontal crop from panorama
         if self.use_gnomonic_projection:
-            # Get the ground truth heading from the metadata
-            gt_heading_deg = self.idx2heading.get(idx, 0.0)
-
             # Sample random heading (vehicle direction) if enabled (training augmentation)
             if self.random_heading and self.stage == "train":
                 # Add random offset to the ground truth heading for augmentation
@@ -233,6 +242,11 @@ class CVUSADataset(Dataset):
                 output_shape=self.gnomonic_output_shape,
             )
 
+        # Optionally rotate reference (satellite) image by ground truth heading
+        if self.rotate_reference_by_heading and self.mode == "reference":
+            gt_heading_deg = self.idx2heading.get(idx, 0.0)
+            img = self._rotate_image_by_heading(img, gt_heading_deg)
+
         # image transforms
         if self.mode == "query" and self.transforms_query is not None:
             img = self.transforms_query(image=img)["image"]
@@ -242,6 +256,28 @@ class CVUSADataset(Dataset):
         label = torch.tensor(idx, dtype=torch.long)
 
         return img, label
+
+    def _rotate_image_by_heading(self, img, heading_deg):
+        """
+        Rotate image by heading angle (clockwise).
+
+        Args:
+            img: Input image (H, W, C) as numpy array
+            heading_deg: Rotation angle in degrees (0-360, clockwise from North)
+
+        Returns:
+            Rotated image with same dimensions
+        """
+        h, w = img.shape[:2]
+        center = (w // 2, h // 2)
+        heading_deg += 180.0  # Adjust heading to match image rotation direction
+        # Create rotation matrix (negative for clockwise rotation in image coordinates)
+        rotation_matrix = cv2.getRotationMatrix2D(center, heading_deg, 1.0)
+
+        # Rotate the image
+        rotated_img = cv2.warpAffine(img, rotation_matrix, (w, h), flags=cv2.INTER_LINEAR)
+
+        return rotated_img
 
     def __len__(self):
         if self.mode == "triplet":
@@ -297,21 +333,12 @@ class CVUSADataset(Dataset):
         neighbour_split = neighbour_select // 2
         similarity_pool = copy.deepcopy(sim_dict) if sim_dict is not None else None
 
-        # Shuffle pairs order
         random.shuffle(idx_pool)
-
-        # Lookup if already used in epoch
         idx_epoch = set()
         idx_batch = set()
-
-        # buckets
         batches = []
         current_batch = []
-
-        # counter
         break_counter = 0
-
-        # progressbar
         pbar = tqdm()
 
         while len(idx_pool) > 0 and break_counter < 1024:
@@ -389,7 +416,7 @@ if __name__ == "__main__":
 
     # Fetch a few samples to verify heading usage
     print("\nTesting first 3 samples:")
-    for i in range(1):
+    for i in range(3):
         query_img, reference_img, label = dataset.__getitem__(i)
         idx = label.item()
         heading = dataset.idx2heading.get(idx, None)
