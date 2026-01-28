@@ -90,7 +90,12 @@ def main():
 
     # Load model
     print(f"Loading model from {checkpoint_path}...")
-    model = ImageRetrievalModel.load_from_checkpoint(checkpoint_path)
+    # Auto-detects encoder architecture from checkpoint
+    model = ImageRetrievalModel.load_from_checkpoint(
+        checkpoint_path=checkpoint_path,
+        img_size=384,
+        map_location=device,
+    )
     model = model.to(device)
     model.eval()
     print(f"✓ Model loaded (device: {device})")

@@ -184,6 +184,13 @@ def main():
         embedding_dim=512,
         learning_rate=1e-4,
         loss_type="ntxent",  # Options: "combined", "ntxent", "triplet"
+        # Scheduler configuration
+        scheduler_type="cosine",  # Options: "cosine", "step", "plateau", "none"
+        scheduler_t_max=100,  # Full cosine cycle length in epochs
+        scheduler_eta_min=1e-6,  # Minimum learning rate
+        # scheduler_step_size=30,  # For StepLR: reduce LR every N epochs
+        # scheduler_gamma=0.1,  # For StepLR/ReduceLROnPlateau: LR multiplier
+        # scheduler_patience=10,  # For ReduceLROnPlateau: epochs to wait
     )
 
     # Create datasets
@@ -213,7 +220,14 @@ def main():
 
     # Create model
     print("\nCreating model...")
-    model = ImageRetrievalModel(config=model_config)
+    # Use Sample4Geo encoder (recommended default)
+    model = ImageRetrievalModel.from_sample4geo(
+        config=model_config,
+        model_name="resnet50",
+        pretrained=True,
+        img_size=384,
+        freeze_encoder=False,
+    )
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
     # Create callbacks
@@ -255,8 +269,12 @@ def main():
             "learning_rate": model_config.learning_rate,
             "temperature": model_config.temperature,
             "margin": model_config.margin,
-            "freeze_backbone": model_config.freeze_backbone,
+            "encoder_model": "resnet50",
+            "encoder_img_size": 384,
             "loss_type": model_config.loss_type,
+            "scheduler_type": model_config.scheduler_type,
+            "scheduler_t_max": model_config.scheduler_t_max,
+            "scheduler_eta_min": model_config.scheduler_eta_min,
             "batch_size": 32,
             "train_size": len(train_dataset),
             "val_size": len(val_dataset),
@@ -271,7 +289,6 @@ def main():
         devices=1,
         callbacks=[checkpoint_callback, early_stop, shuffle_callback],
         logger=wandb_logger,
-        check_val_every_n_epoch=2,
     )
 
     # Train
