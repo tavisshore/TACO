@@ -1,6 +1,7 @@
 """PyTorch Lightning model for image retrieval using ConvNeXt."""
 
-from typing import Any, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Tuple
 
 import lightning as L
 import numpy as np
@@ -10,42 +11,49 @@ from torch import Tensor, nn
 from torchvision import models
 
 
+@dataclass
+class ImageRetrievalModelConfig:
+    """Configuration for ImageRetrievalModel.
+
+    Args:
+        embedding_dim: Dimension of the output embedding
+        pretrained: Whether to use pretrained ConvNeXt weights
+        learning_rate: Learning rate for optimizer
+        temperature: Temperature for contrastive loss
+        margin: Margin for triplet loss
+        freeze_backbone: If True, freeze ConvNeXt backbone weights
+    """
+
+    embedding_dim: int = 512
+    pretrained: bool = True
+    learning_rate: float = 1e-4
+    temperature: float = 0.07
+    margin: float = 0.2
+    freeze_backbone: bool = False
+
+
 class ImageRetrievalModel(L.LightningModule):
     """PyTorch Lightning model for image retrieval using ConvNeXt-Tiny.
 
     Uses a pre-trained ConvNeXt-Tiny backbone to encode images into
     low-dimensional descriptors for visual place recognition.
+
+    Args:
+        config: ImageRetrievalModelConfig object containing all configuration parameters
     """
 
-    def __init__(
-        self,
-        embedding_dim: int = 512,
-        pretrained: bool = True,
-        learning_rate: float = 1e-4,
-        temperature: float = 0.07,
-        margin: float = 0.2,
-        freeze_backbone: bool = False,
-    ) -> None:
+    def __init__(self, config: ImageRetrievalModelConfig) -> None:
         """Initialize the image retrieval model.
 
         Args:
-            embedding_dim: Dimension of the output embedding.
-            pretrained: Whether to use pretrained ConvNeXt weights.
-            learning_rate: Learning rate for optimizer.
-            temperature: Temperature for contrastive loss.
-            margin: Margin for triplet loss.
-            freeze_backbone: If True, freeze ConvNeXt backbone weights.
+            config: ImageRetrievalModelConfig object containing all configuration parameters
         """
         super().__init__()
+        self.config = config
         self.save_hyperparameters()
 
-        self.embedding_dim = embedding_dim
-        self.learning_rate = learning_rate
-        self.temperature = temperature
-        self.margin = margin
-
         # Load pre-trained ConvNeXt-Tiny
-        weights = models.ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None
+        weights = models.ConvNeXt_Tiny_Weights.DEFAULT if config.pretrained else None
         convnext = models.convnext_tiny(weights=weights)
 
         # ConvNeXt-Tiny structure:
@@ -66,7 +74,7 @@ class ImageRetrievalModel(L.LightningModule):
         backbone_dim = 768
 
         # Freeze backbone if requested
-        if freeze_backbone:
+        if config.freeze_backbone:
             for param in self.backbone.parameters():
                 param.requires_grad = False
 
@@ -78,7 +86,7 @@ class ImageRetrievalModel(L.LightningModule):
             nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
             nn.Dropout(0.1),
-            nn.Linear(1024, embedding_dim),
+            nn.Linear(1024, config.embedding_dim),
         )
 
         # L2 normalization layer
@@ -125,7 +133,7 @@ class ImageRetrievalModel(L.LightningModule):
         neg_distance = F.pairwise_distance(anchor, negative, p=2)
 
         # Triplet loss with margin
-        loss = F.relu(pos_distance - neg_distance + self.margin)
+        loss = F.relu(pos_distance - neg_distance + self.config.margin)
 
         return loss.mean()
 
@@ -144,7 +152,7 @@ class ImageRetrievalModel(L.LightningModule):
             Contrastive loss value.
         """
         # Compute similarity matrix
-        similarity = torch.matmul(embeddings, embeddings.T) / self.temperature
+        similarity = torch.matmul(embeddings, embeddings.T) / self.config.temperature
 
         # Create positive mask (same place)
         labels = labels.view(-1, 1)
@@ -167,30 +175,34 @@ class ImageRetrievalModel(L.LightningModule):
 
     def training_step(
         self,
-        batch: Tuple[Tensor, Tensor, Tensor, Tensor],
+        batch: Tuple[Tensor, Tensor, Tensor],
         batch_idx: int,
     ) -> Tensor:
         """Training step.
 
         Args:
-            batch: Tuple of (anchor, positive, negative, labels).
+            batch: Tuple of (query_img, reference_img, labels) from CVUSADataset.
             batch_idx: Batch index.
 
         Returns:
             Loss value.
         """
-        anchor_img, positive_img, negative_img, labels = batch
+        query_img, reference_img, labels = batch
 
         # Compute embeddings
-        anchor_emb = self(anchor_img)
-        positive_emb = self(positive_img)
-        negative_emb = self(negative_img)
+        query_emb = self(query_img)  # anchor embeddings (ground view)
+        reference_emb = self(reference_img)  # positive embeddings (satellite view)
 
-        # Compute triplet loss
-        triplet_loss = self.compute_triplet_loss(anchor_emb, positive_emb, negative_emb)
+        # Sample negatives: shift reference embeddings to create mismatched pairs
+        # Since the dataset shuffle ensures unique labels in each batch,
+        # rolling by 1 gives us guaranteed negatives
+        negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
 
-        # Compute contrastive loss on anchors
-        contrastive_loss = self.compute_contrastive_loss(anchor_emb, labels)
+        # Compute triplet loss (query as anchor, reference as positive, rolled reference as negative)
+        triplet_loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
+
+        # Compute contrastive loss on query embeddings
+        contrastive_loss = self.compute_contrastive_loss(query_emb, labels)
 
         # Combined loss
         loss = triplet_loss + 0.5 * contrastive_loss
@@ -202,40 +214,91 @@ class ImageRetrievalModel(L.LightningModule):
 
         return loss
 
+    def compute_recall_at_k(
+        self,
+        query_emb: Tensor,
+        reference_emb: Tensor,
+        k_values: tuple[int, ...] = (1, 5, 10),
+    ) -> dict[int, float]:
+        """Compute recall@K metrics for image retrieval.
+
+        For each query, computes similarity with all references and checks
+        if the correct match (same index) appears in the top-K results.
+
+        Args:
+            query_emb: Query embeddings (B, D).
+            reference_emb: Reference embeddings (B, D).
+            k_values: List of K values to compute recall for.
+
+        Returns:
+            Dictionary mapping K to recall@K as a fraction in [0, 1].
+        """
+        batch_size = query_emb.size(0)
+
+        # Compute similarity matrix: (B, B)
+        # Each row i contains similarities between query i and all references
+        similarity_matrix = torch.matmul(query_emb, reference_emb.T)
+
+        # For each query (row), rank references by similarity (descending)
+        # Get indices of references sorted by similarity
+        _, sorted_indices = torch.sort(similarity_matrix, dim=1, descending=True)
+
+        # Ground truth: correct match for query i is reference i
+        correct_indices = torch.arange(batch_size, device=query_emb.device).unsqueeze(1)
+
+        # Compute recall@K for each K value
+        recall_at_k = {}
+        for k in k_values:
+            # Get top-K predictions for each query
+            top_k_indices = sorted_indices[:, :k]
+
+            # Check if correct index is in top-K for each query
+            matches = (top_k_indices == correct_indices).any(dim=1).float()
+
+            # Recall@K is the fraction of queries where correct match is in top-K
+            recall_at_k[k] = matches.mean().item()
+
+        return recall_at_k
+
     def validation_step(
         self,
-        batch: Tuple[Tensor, Tensor, Tensor, Tensor],
+        batch: Tuple[Tensor, Tensor, Tensor],
         batch_idx: int,
     ) -> Tensor:
         """Validation step.
 
         Args:
-            batch: Tuple of (anchor, positive, negative, labels).
+            batch: Tuple of (query_img, reference_img, labels) from CVUSADataset.
             batch_idx: Batch index.
 
         Returns:
             Loss value.
         """
-        anchor_img, positive_img, negative_img, labels = batch
+        query_img, reference_img, labels = batch
 
         # Compute embeddings
-        anchor_emb = self(anchor_img)
-        positive_emb = self(positive_img)
-        negative_emb = self(negative_img)
+        query_emb = self(query_img)  # anchor embeddings (ground view)
+        reference_emb = self(reference_img)  # positive embeddings (satellite view)
+
+        # Sample negatives: shift reference embeddings to create mismatched pairs
+        negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
 
         # Compute triplet loss
-        triplet_loss = self.compute_triplet_loss(anchor_emb, positive_emb, negative_emb)
+        triplet_loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
 
         # Compute contrastive loss
-        contrastive_loss = self.compute_contrastive_loss(anchor_emb, labels)
+        contrastive_loss = self.compute_contrastive_loss(query_emb, labels)
 
         # Combined loss
         loss = triplet_loss + 0.5 * contrastive_loss
 
         # Compute metrics
-        pos_distance = F.pairwise_distance(anchor_emb, positive_emb, p=2)
-        neg_distance = F.pairwise_distance(anchor_emb, negative_emb, p=2)
+        pos_distance = F.pairwise_distance(query_emb, reference_emb, p=2)
+        neg_distance = F.pairwise_distance(query_emb, negative_emb, p=2)
         accuracy = (pos_distance < neg_distance).float().mean()
+
+        # Compute Top-K recall metrics
+        recall_at_k = self.compute_recall_at_k(query_emb, reference_emb, k_values=(1, 5, 10))
 
         # Log metrics
         self.log("val/triplet_loss", triplet_loss, prog_bar=True)
@@ -244,6 +307,11 @@ class ImageRetrievalModel(L.LightningModule):
         self.log("val/accuracy", accuracy, prog_bar=True)
         self.log("val/pos_distance", pos_distance.mean())
         self.log("val/neg_distance", neg_distance.mean())
+
+        # Log recall@K metrics as percentages in progress bar
+        self.log("val/recall@1", recall_at_k[1] * 100, prog_bar=True)
+        self.log("val/recall@5", recall_at_k[5] * 100, prog_bar=True)
+        self.log("val/recall@10", recall_at_k[10] * 100, prog_bar=True)
 
         return loss
 
@@ -256,7 +324,7 @@ class ImageRetrievalModel(L.LightningModule):
         # Use AdamW optimizer
         optimizer = torch.optim.AdamW(
             self.parameters(),
-            lr=self.learning_rate,
+            lr=self.config.learning_rate,
             weight_decay=0.01,
         )
 
@@ -363,3 +431,32 @@ class ImageRetrievalModel(L.LightningModule):
         top_similarities, top_indices = torch.topk(similarities, top_k)
 
         return top_indices.numpy(), top_similarities.numpy()
+
+
+if __name__ == "__main__":
+    # Example usage
+    import numpy as np
+
+    # Create configuration
+    config = ImageRetrievalModelConfig(
+        embedding_dim=512,
+        pretrained=True,
+        learning_rate=1e-4,
+        temperature=0.07,
+        margin=0.2,
+        freeze_backbone=False,
+    )
+
+    # Create model with config
+    model = ImageRetrievalModel(config)
+    print(f"Model created with embedding_dim={config.embedding_dim}")
+
+    # Test forward pass
+    dummy_image = torch.randn(2, 3, 224, 224)
+    embeddings = model(dummy_image)
+    print(f"Embeddings shape: {embeddings.shape}")
+
+    # Test encoding a single image
+    test_image = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+    embedding = model.encode_image(test_image)
+    print(f"Single image embedding shape: {embedding.shape}")

@@ -1,7 +1,9 @@
 import copy
 import random
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Tuple
 
 import cv2
 import numpy as np
@@ -13,12 +15,9 @@ from tqdm import tqdm
 from taco.utils.image import panorama_horizontal_crop
 
 
-class CVUSADataset(Dataset):
-    """
-    Unified CVUSA dataset for both training and evaluation.
-
-    Loads heading metadata from split/all.csv and uses it to extract horizontal
-    slices from street view panoramas at the correct vehicle direction.
+@dataclass
+class CVUSADatasetConfig:
+    """Configuration for CVUSADataset.
 
     Args:
         data_folder: Path to CVUSA dataset root
@@ -30,7 +29,7 @@ class CVUSADataset(Dataset):
         prob_flip: Probability of horizontal flip augmentation
         prob_rotate: Probability of rotation augmentation (90/180/270 degrees)
         shuffle_batch_size: Batch size for shuffle operation in triplet mode
-        use_gnomonic_projection: Whether to crop panorama horizontally (name kept for compatibility)
+        use_gnomonic_projection: Whether to crop panorama horizontally
         gnomonic_fov_deg: Horizontal field of view in degrees (determines crop width)
         gnomonic_output_shape: Output shape (H, W) for cropped images
         random_heading: If True, adds random offset to ground truth heading during training
@@ -38,80 +37,73 @@ class CVUSADataset(Dataset):
         pitch_range: Not used (kept for compatibility)
         eval_heading_deg: Not used (heading from CSV is used instead)
         eval_pitch_deg: Not used (kept for compatibility)
-        heading_csv_offset: Offset to add to image ID when indexing into all.csv (default: 0)
+        heading_csv_offset: Offset to add to image ID when indexing into all.csv
         rotate_reference_by_heading: If True, rotates satellite reference image by gt_heading_deg
+        crop_rotated_reference: If True, crops rotated reference to remove black padding
+        network_input_size: Output size (H, W) for network input after all processing
     """
 
-    def __init__(
-        self,
-        data_folder: Path = Path("/scratch/datasets/CVUSA/files"),
-        stage="train",
-        mode="triplet",
-        transforms_query=None,
-        transforms_reference=None,
-        prob_flip=0.0,
-        prob_rotate=0.0,
-        shuffle_batch_size=128,
-        use_gnomonic_projection=True,
-        gnomonic_fov_deg=90.0,
-        gnomonic_output_shape=(224, 224),
-        random_heading=True,
-        random_pitch=False,
-        pitch_range=(-10.0, 10.0),
-        eval_heading_deg=0.0,
-        eval_pitch_deg=0.0,
-        heading_csv_offset=0,
-        rotate_reference_by_heading=True,
-    ):
+    data_folder: Path = Path("/scratch/datasets/CVUSA/files")
+    stage: str = "train"
+    mode: str = "triplet"
+    transforms_query: object | None = None
+    transforms_reference: object | None = None
+    prob_flip: float = 0.0
+    prob_rotate: float = 0.0
+    shuffle_batch_size: int = 128
+    use_gnomonic_projection: bool = True
+    gnomonic_fov_deg: float = 120.0
+    gnomonic_output_shape: Tuple[int, int] = (224, 224)
+    random_heading: bool = True
+    random_pitch: bool = False
+    pitch_range: Tuple[float, float] = (-10.0, 10.0)
+    eval_heading_deg: float = 0.0
+    eval_pitch_deg: float = 0.0
+    heading_csv_offset: int = 0
+    rotate_reference_by_heading: bool = True
+    crop_rotated_reference: bool = True
+    network_input_size: Tuple[int, int] = (224, 224)
+
+
+class CVUSADataset(Dataset):
+    """
+    Unified CVUSA dataset for both training and evaluation.
+
+    Loads heading metadata from split/all.csv and uses it to extract horizontal
+    slices from street view panoramas at the correct vehicle direction.
+
+    Args:
+        config: CVUSADatasetConfig object containing all configuration parameters
+    """
+
+    def __init__(self, config: CVUSADatasetConfig):
         super().__init__()
 
-        assert stage in ["train", "val"], "stage must be 'train' or 'val'"
-        assert mode in [
+        self.config = config
+
+        assert config.stage in ["train", "val"], "stage must be 'train' or 'val'"
+        assert config.mode in [
             "triplet",
             "query",
             "reference",
         ], "mode must be 'triplet', 'query', or 'reference'"
-
-        self.data_folder = data_folder
-        self.stage = stage
-        self.mode = mode
-        self.prob_flip = prob_flip
-        self.prob_rotate = prob_rotate
-        self.shuffle_batch_size = shuffle_batch_size
-
-        # Gnomonic projection parameters
-        self.use_gnomonic_projection = use_gnomonic_projection
-        self.gnomonic_fov_deg = gnomonic_fov_deg
-        self.gnomonic_output_shape = gnomonic_output_shape
-        self.random_heading = random_heading
-        self.random_pitch = random_pitch
-        self.pitch_range = pitch_range
-        self.eval_heading_deg = eval_heading_deg
-        self.eval_pitch_deg = eval_pitch_deg
-
-        self.transforms_query = transforms_query  # ground
-        self.transforms_reference = transforms_reference  # satellite
-        self.heading_csv_offset = heading_csv_offset
-        self.rotate_reference_by_heading = rotate_reference_by_heading
-
         # Load heading metadata from all.csv
         # Image IDs in filenames (e.g., 0041073.jpg -> ID 41073) map to row (ID + offset) in all.csv
-        all_metadata = pd.read_csv(f"{data_folder}/split/all.csv", header=None)
+        all_metadata = pd.read_csv(f"{config.data_folder}/split/all.csv", header=None)
         all_metadata.columns = ["street_lat", "street_lon", "sat_lat", "sat_lon", "heading"]
-        print(all_metadata.head(101))
         # Create mapping: image_id -> heading
         # The row index in all.csv = image_id + offset
         self.idx2heading = {
-            i: all_metadata.loc[i + heading_csv_offset, "heading"]
-            for i in range(len(all_metadata) - heading_csv_offset)
-            if i + heading_csv_offset < len(all_metadata)
+            i: all_metadata.loc[i + config.heading_csv_offset, "heading"]
+            for i in range(len(all_metadata) - config.heading_csv_offset)
+            if i + config.heading_csv_offset < len(all_metadata)
         }
 
         # Load appropriate split
-        if stage == "train":
-            self.df = pd.read_csv(f"{data_folder}/splits/train-19zl.csv", header=None)
+        if config.stage == "train":
+            self.df = pd.read_csv(f"{config.data_folder}/splits/train-19zl.csv", header=None)
         else:
-            self.df = pd.read_csv(f"{data_folder}/splits/val-19zl.csv", header=None)
+            self.df = pd.read_csv(f"{config.data_folder}/splits/val-19zl.csv", header=None)
 
         self.df = self.df.rename(columns={0: "satellite", 1: "street", 2: "ground_anno"})
         self.df = self.df.drop(columns=["ground_anno"])
@@ -122,7 +114,7 @@ class CVUSADataset(Dataset):
         self.idx2ground = dict(zip(self.df.idx, self.df.street, strict=False))
 
         # Setup based on mode
-        if mode == "triplet":
+        if config.mode == "triplet":
             # Training mode: return (query, reference, label) triplets
             self.pairs = list(zip(self.df.idx, self.df.satellite, self.df.street, strict=False))
             self.idx2pair = {}
@@ -136,17 +128,17 @@ class CVUSADataset(Dataset):
 
             self.train_ids = train_ids_list
             self.samples = copy.deepcopy(self.train_ids)
-        elif mode == "reference":
+        elif config.mode == "reference":
             # Reference/satellite images only
             self.images = self.df.satellite.values
             self.label = self.df.idx.values
-        elif mode == "query":
+        elif config.mode == "query":
             # Query/ground images only
             self.images = self.df.street.values
             self.label = self.df.idx.values
 
     def __getitem__(self, index):
-        if self.mode == "triplet":
+        if self.config.mode == "triplet":
             return self._get_triplet(index)
         return self._get_single_image(index)
 
@@ -155,11 +147,11 @@ class CVUSADataset(Dataset):
         idx, sat, ground = self.idx2pair[self.samples[index]]
 
         # load query -> ground image (equirectangular panorama)
-        query_img = cv2.imread(f"{self.data_folder}/{ground}")
+        query_img = cv2.imread(f"{self.config.data_folder}/{ground}")
         query_img = cv2.cvtColor(query_img, cv2.COLOR_BGR2RGB)
 
         # load reference -> satellite image
-        reference_img = cv2.imread(f"{self.data_folder}/{sat}")
+        reference_img = cv2.imread(f"{self.config.data_folder}/{sat}")
         reference_img = cv2.cvtColor(reference_img, cv2.COLOR_BGR2RGB)
 
         # Get the ground truth heading from the metadata
@@ -168,13 +160,15 @@ class CVUSADataset(Dataset):
         ) % 360.0  # Adjust for image ID offset
 
         # Optionally rotate reference image by ground truth heading
-        if self.rotate_reference_by_heading:
-            reference_img = self._rotate_image_by_heading(reference_img, gt_heading_deg)
+        if self.config.rotate_reference_by_heading:
+            reference_img = self._rotate_image_by_heading(
+                reference_img, gt_heading_deg, crop_to_fit=self.config.crop_rotated_reference
+            )
 
         # Apply horizontal crop from panorama
-        if self.use_gnomonic_projection:
+        if self.config.use_gnomonic_projection:
             # Sample random heading (vehicle direction) if enabled (training augmentation)
-            if self.random_heading and self.stage == "train":
+            if self.config.random_heading and self.config.stage == "train":
                 # Add random offset to the ground truth heading for augmentation
                 heading_offset = np.random.uniform(-180.0, 180.0)
                 heading_deg = (gt_heading_deg + heading_offset) % 360.0
@@ -185,26 +179,26 @@ class CVUSADataset(Dataset):
             query_img = panorama_horizontal_crop(
                 query_img,
                 heading_deg=heading_deg,
-                fov_deg=self.gnomonic_fov_deg,
-                output_shape=self.gnomonic_output_shape,
+                fov_deg=self.config.gnomonic_fov_deg,
+                output_shape=self.config.gnomonic_output_shape,
             )
-        cv2.imwrite(f"output/{index}_r.jpg", cv2.cvtColor(reference_img, cv2.COLOR_RGB2BGR))
-        cv2.imwrite(f"output/{index}_q.jpg", cv2.cvtColor(query_img, cv2.COLOR_RGB2BGR))
+        # cv2.imwrite(f"output/{index}_r.jpg", cv2.cvtColor(reference_img, cv2.COLOR_RGB2BGR))
+        # cv2.imwrite(f"output/{index}_q.jpg", cv2.cvtColor(query_img, cv2.COLOR_RGB2BGR))
 
         # Flip simultaneously query and reference (only during training)
-        if self.stage == "train" and np.random.random() < self.prob_flip:
+        if self.config.stage == "train" and np.random.random() < self.config.prob_flip:
             query_img = cv2.flip(query_img, 1)
             reference_img = cv2.flip(reference_img, 1)
 
         # image transforms
-        if self.transforms_query is not None:
-            query_img = self.transforms_query(image=query_img)["image"]
+        if self.config.transforms_query is not None:
+            query_img = self.config.transforms_query(image=query_img)["image"]
 
-        if self.transforms_reference is not None:
-            reference_img = self.transforms_reference(image=reference_img)["image"]
+        if self.config.transforms_reference is not None:
+            reference_img = self.config.transforms_reference(image=reference_img)["image"]
 
         # Rotate simultaneously query and reference (only during training)
-        if self.stage == "train" and np.random.random() < self.prob_rotate:
+        if self.config.stage == "train" and np.random.random() < self.config.prob_rotate:
             r = np.random.choice([1, 2, 3])
 
             # rotate sat img 90 or 180 or 270
@@ -213,74 +207,133 @@ class CVUSADataset(Dataset):
             # use roll for ground view if rotate sat view
             # Note: If gnomonic projection is used, the query_img is already a perspective crop
             # so rolling might not make sense. Consider adjusting heading instead during projection.
-            if not self.use_gnomonic_projection:
+            if not self.config.use_gnomonic_projection:
                 w = query_img.shape[2]
                 shifts = -w // 4 * r
                 query_img = torch.roll(query_img, shifts=shifts, dims=2)
 
         label = torch.tensor(idx, dtype=torch.long)
 
+        # Convert to tensor and permute from (H, W, C) to (C, H, W)
+        query_img = torch.tensor(query_img, dtype=torch.float32).permute(2, 0, 1)
+        reference_img = torch.tensor(reference_img, dtype=torch.float32).permute(2, 0, 1)
+
+        # Resize to network input size
+        query_img = torch.nn.functional.interpolate(
+            query_img.unsqueeze(0),
+            size=self.config.network_input_size,
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+
+        reference_img = torch.nn.functional.interpolate(
+            reference_img.unsqueeze(0),
+            size=self.config.network_input_size,
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+
         return query_img, reference_img, label
 
     def _get_single_image(self, index):
         """Get single image for evaluation: (image, label)."""
-        img = cv2.imread(f"{self.data_folder}/{self.images[index]}")
+        img = cv2.imread(f"{self.config.data_folder}/{self.images[index]}")
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
         # Get the index/label for this image
         idx = self.label[index]
 
         # Apply horizontal crop for query (ground) images during evaluation
-        if self.use_gnomonic_projection and self.mode == "query":
+        if self.config.use_gnomonic_projection and self.config.mode == "query":
             # Get the ground truth heading from the metadata
             gt_heading_deg = self.idx2heading.get(idx, 0.0)
 
             img = panorama_horizontal_crop(
                 img,
                 heading_deg=gt_heading_deg,
-                fov_deg=self.gnomonic_fov_deg,
-                output_shape=self.gnomonic_output_shape,
+                fov_deg=self.config.gnomonic_fov_deg,
+                output_shape=self.config.gnomonic_output_shape,
             )
 
         # Optionally rotate reference (satellite) image by ground truth heading
-        if self.rotate_reference_by_heading and self.mode == "reference":
+        if self.config.rotate_reference_by_heading and self.config.mode == "reference":
             gt_heading_deg = self.idx2heading.get(idx, 0.0)
-            img = self._rotate_image_by_heading(img, gt_heading_deg)
+            img = self._rotate_image_by_heading(
+                img, gt_heading_deg, crop_to_fit=self.config.crop_rotated_reference
+            )
 
         # image transforms
-        if self.mode == "query" and self.transforms_query is not None:
-            img = self.transforms_query(image=img)["image"]
-        elif self.mode == "reference" and self.transforms_reference is not None:
-            img = self.transforms_reference(image=img)["image"]
+        if self.config.mode == "query" and self.config.transforms_query is not None:
+            img = self.config.transforms_query(image=img)["image"]
+        elif self.config.mode == "reference" and self.config.transforms_reference is not None:
+            img = self.config.transforms_reference(image=img)["image"]
 
         label = torch.tensor(idx, dtype=torch.long)
 
+        # Convert to tensor and permute from (H, W, C) to (C, H, W) if numpy array
+        if isinstance(img, np.ndarray):
+            img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)
+
+        # Resize to network input size
+        img = torch.nn.functional.interpolate(
+            img.unsqueeze(0),
+            size=self.config.network_input_size,
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+
         return img, label
 
-    def _rotate_image_by_heading(self, img, heading_deg):
+    def _rotate_image_by_heading(self, img, heading_deg, crop_to_fit=True):
         """
-        Rotate image by heading angle (clockwise).
+        Rotate image by heading angle (clockwise) with options to handle black padding.
 
         Args:
             img: Input image (H, W, C) as numpy array
             heading_deg: Rotation angle in degrees (0-360, clockwise from North)
+            crop_to_fit: If True, crops to largest rectangle that fits without black padding
 
         Returns:
-            Rotated image with same dimensions
+            Rotated image (cropped if crop_to_fit=True, otherwise same dimensions)
         """
         h, w = img.shape[:2]
         center = (w // 2, h // 2)
         heading_deg += 180.0  # Adjust heading to match image rotation direction
+
         # Create rotation matrix (negative for clockwise rotation in image coordinates)
         rotation_matrix = cv2.getRotationMatrix2D(center, heading_deg, 1.0)
 
         # Rotate the image
         rotated_img = cv2.warpAffine(img, rotation_matrix, (w, h), flags=cv2.INTER_LINEAR)
 
+        if crop_to_fit:
+            # Calculate the largest rectangle that fits inside the rotated image
+            # without black padding. This uses the formula for inscribed rectangle.
+            angle_rad = np.abs(np.radians(heading_deg % 90))
+
+            if angle_rad != 0:
+                # Calculate the dimensions of the largest axis-aligned rectangle
+                # that fits inside the rotated image
+                sin_a = np.sin(angle_rad)
+                cos_a = np.cos(angle_rad)
+
+                # Derived from geometry of rotated rectangle
+                new_w = int((w * cos_a - h * sin_a) / (cos_a**2 - sin_a**2))
+                new_h = int((h * cos_a - w * sin_a) / (cos_a**2 - sin_a**2))
+
+                # Ensure dimensions are positive and within bounds
+                new_w = max(1, min(new_w, w))
+                new_h = max(1, min(new_h, h))
+
+                # Crop to center
+                x_start = (w - new_w) // 2
+                y_start = (h - new_h) // 2
+                rotated_img = rotated_img[y_start : y_start + new_h, x_start : x_start + new_w]
+
         return rotated_img
 
     def __len__(self):
-        if self.mode == "triplet":
+        if self.config.mode == "triplet":
             return len(self.samples)
         return len(self.images)
 
@@ -309,7 +362,7 @@ class CVUSADataset(Dataset):
         )
 
         for idx_near in near_similarity_select:
-            if len(current_batch) >= self.shuffle_batch_size:
+            if len(current_batch) >= self.config.shuffle_batch_size:
                 break
 
             is_available = idx_near not in idx_batch and idx_near not in idx_epoch and idx_near
@@ -324,7 +377,7 @@ class CVUSADataset(Dataset):
         Custom shuffle function for unique class_id sampling in batch.
         Only applicable when mode='triplet'.
         """
-        if self.mode != "triplet":
+        if self.config.mode != "triplet":
             raise ValueError("Shuffle is only supported in triplet mode")
 
         print("\nShuffle Dataset:")
@@ -348,7 +401,7 @@ class CVUSADataset(Dataset):
             is_valid = (
                 idx not in idx_batch
                 and idx not in idx_epoch
-                and len(current_batch) < self.shuffle_batch_size
+                and len(current_batch) < self.config.shuffle_batch_size
             )
 
             if is_valid:
@@ -358,7 +411,7 @@ class CVUSADataset(Dataset):
                 break_counter = 0
 
                 # Add similar neighbors if similarity dictionary is provided
-                has_space = len(current_batch) < self.shuffle_batch_size
+                has_space = len(current_batch) < self.config.shuffle_batch_size
                 if similarity_pool is not None and has_space:
                     self._add_similar_neighbours_to_batch(
                         idx,
@@ -375,7 +428,7 @@ class CVUSADataset(Dataset):
                     idx_pool.append(idx)
                 break_counter += 1
 
-            if len(current_batch) >= self.shuffle_batch_size:
+            if len(current_batch) >= self.config.shuffle_batch_size:
                 # empty current_batch bucket to batches
                 batches.extend(current_batch)
                 idx_batch = set()
@@ -403,26 +456,31 @@ CVUSADatasetEval = CVUSADataset
 
 if __name__ == "__main__":
     # Example usage
-    dataset = CVUSADataset(
+    config = CVUSADatasetConfig(
         data_folder=Path("/scratch/datasets/CVUSA/files"),
         stage="train",
         mode="triplet",
         use_gnomonic_projection=True,
         random_heading=False,
     )
+    dataset = CVUSADataset(config)
 
     print(f"Dataset size: {len(dataset)}")
-    print(f"Loaded heading data for {len(dataset.idx2heading)} images")
 
-    # Fetch a few samples to verify heading usage
-    print("\nTesting first 3 samples:")
-    for i in range(3):
-        query_img, reference_img, label = dataset.__getitem__(i)
-        idx = label.item()
-        heading = dataset.idx2heading.get(idx, None)
+    config_val = CVUSADatasetConfig(
+        data_folder=Path("/scratch/datasets/CVUSA/files"),
+        stage="val",
+        mode="triplet",
+        use_gnomonic_projection=True,
+        random_heading=False,
+    )
+    dataset_val = CVUSADataset(config_val)
 
-        print(f"\nSample {i}:")
-        print(f"  Image ID: {idx}")
-        print(f"  Ground truth heading: {heading:.2f}°" if heading else "  Heading: Not found")
-        print(f"  Query shape: {query_img.shape}")
-        print(f"  Reference shape: {reference_img.shape}")
+    print(f"Dataset size: {len(dataset_val)}")
+
+    # Iterate through a few samples
+    for i in range(5):
+        query_img, reference_img, label = dataset[i]
+        print(
+            f"Sample {i}: Query shape: {query_img.shape}, Reference shape: {reference_img.shape}, Label: {label}"
+        )
