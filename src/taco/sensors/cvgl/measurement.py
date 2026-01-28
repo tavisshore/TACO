@@ -23,6 +23,7 @@ class CVGLMeasurement:
     timestamp: float
     position: npt.NDArray[np.float64]  # 2D position (x, y) in world frame (UTM or local)
     position_covariance: npt.NDArray[np.float64]  # 2x2 covariance for (x, y)
+    coordinates: tuple[float, float]  # Geographic coordinates (lat, lon)
     confidence: float  # Matching confidence [0, 1]
     num_inliers: int  # Number of inlier features
     yaw: float | None = None  # Optional: heading from IMU (not from CVGL)
@@ -38,6 +39,21 @@ class CVGLMeasurement:
 
         if not 0 <= self.confidence <= 1:
             raise ValueError("Confidence must be in [0, 1]")
+
+    @property
+    def position_std(self) -> float:
+        """Get position standard deviation (average of x and y std devs).
+
+        For isotropic covariance (equal uncertainty in x and y), this returns
+        the standard deviation. For anisotropic covariance, returns the average.
+
+        Returns:
+            Position standard deviation in meters.
+        """
+        # Extract standard deviations from diagonal of covariance matrix
+        std_x = np.sqrt(self.position_covariance[0, 0])
+        std_y = np.sqrt(self.position_covariance[1, 1])
+        return float((std_x + std_y) / 2.0)
 
     @property
     def covariance(self) -> npt.NDArray[np.float64]:

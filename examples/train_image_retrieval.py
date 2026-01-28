@@ -220,7 +220,14 @@ def main():
 
     # Create model
     print("\nCreating model...")
-    model = ImageRetrievalModel(config=model_config)
+    # Use Sample4Geo encoder (recommended default)
+    model = ImageRetrievalModel.from_sample4geo(
+        config=model_config,
+        model_name="resnet50",
+        pretrained=True,
+        img_size=384,
+        freeze_encoder=False,
+    )
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
     # Create callbacks
@@ -262,7 +269,8 @@ def main():
             "learning_rate": model_config.learning_rate,
             "temperature": model_config.temperature,
             "margin": model_config.margin,
-            "freeze_backbone": model_config.freeze_backbone,
+            "encoder_model": "resnet50",
+            "encoder_img_size": 384,
             "loss_type": model_config.loss_type,
             "scheduler_type": model_config.scheduler_type,
             "scheduler_t_max": model_config.scheduler_t_max,

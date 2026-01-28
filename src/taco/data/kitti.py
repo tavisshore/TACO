@@ -529,7 +529,7 @@ def narrow_candidates_from_turns(
     data: Kitti,
     turns: TurnDetection,
     angle_tolerance: float = np.deg2rad(30),  # radians
-    connectivity_check: bool = True,
+    connectivity_check: bool = False,  # If True, apply connectivity and frustum filtering
     verbose: bool = False,
     output_path: str | Path | None = None,
     frame_idx: int | None = None,

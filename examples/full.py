@@ -30,25 +30,37 @@ from taco.visualization import plot_trajectory
 
 def initialize_cvgl_model(checkpoint_path: Path) -> tuple[ImageRetrievalModel, torch.device]:
     """Initialize CVGL model and load checkpoint if available."""
-    cvgl_config = ImageRetrievalModelConfig(
-        embedding_dim=512,
-        pretrained=True,
-        learning_rate=1e-4,
-        temperature=0.07,
-        loss_type="ntxent",
-    )
-    cvgl_model = ImageRetrievalModel(cvgl_config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load trained weights if available
     if checkpoint_path.exists():
-        print(f"   Loading CVGL weights from {checkpoint_path}")
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        cvgl_model.load_state_dict(checkpoint["state_dict"])
+        print(f"   Loading CVGL model from {checkpoint_path}")
+        # Use the load_from_checkpoint class method (auto-detects encoder)
+        cvgl_model = ImageRetrievalModel.load_from_checkpoint(
+            checkpoint_path=str(checkpoint_path),
+            img_size=384,
+            map_location=device,
+        )
     else:
-        print("   Warning: No trained CVGL checkpoint found, using pretrained ConvNeXt backbone")
+        print(
+            "   Warning: No trained CVGL checkpoint found, creating model with pretrained encoder"
+        )
+        # Create config
+        cvgl_config = ImageRetrievalModelConfig(
+            embedding_dim=512,
+            learning_rate=1e-4,
+            temperature=0.07,
+            loss_type="ntxent",
+        )
+        # Create model with Sample4Geo encoder (default recommended)
+        cvgl_model = ImageRetrievalModel.from_sample4geo(
+            config=cvgl_config,
+            model_name="resnet50",  # Use ResNet50 as default
+            pretrained=True,
+            img_size=384,
+        )
 
     cvgl_model.eval()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     cvgl_model = cvgl_model.to(device)
 
     return cvgl_model, device
@@ -89,7 +101,7 @@ def handle_cvgl_measurement(
         cvgl_measurement = cvgl_model.query_database_as_measurement(
             query_image=query_img_np,
             timestamp=timestamp,
-            top_k=5,
+            top_k=1,
             device=device,
             use_weighted_average=True,
             base_position_std=5.0,
@@ -100,15 +112,13 @@ def handle_cvgl_measurement(
         cvgl_pose = cvgl_measurement.to_gtsam_pose(yaw=current_yaw)
         cvgl_noise = cvgl_measurement.get_gtsam_noise_model()
         print(f"   CVGL position noise stddev: {cvgl_measurement.position_std:.2f} m")
-        print("    Check changing top_k to 1")
+        # print("    Check changing top_k to 1")
 
         graph.add_pose_factor(next_pose_id, cvgl_pose, cvgl_noise)
 
         print(
             f"   CVGL match at turn {num_turns}: "
-            f"confidence={cvgl_measurement.confidence:.3f}, "
-            f"pos=({cvgl_measurement.position[0]:.1f}, {cvgl_measurement.position[1]:.1f}), "
-            f"yaw={current_yaw:.3f} (from IMU)"
+            f"pos=({cvgl_measurement.coordinates[0]:.7f}, {cvgl_measurement.coordinates[1]:.7f}), "
         )
 
     except RuntimeError as e:
@@ -146,45 +156,54 @@ def main() -> None:
 
     # Initialize CVGL model
     print("\n2.5. Initialising CVGL localization model...")
-    checkpoint_path = Path("checkpoints/cvgl_model.ckpt")
+    checkpoint_path = Path(
+        "weights/pretrained/cvusa/convnext_base.fb_in22k_ft_in1k_384/weights_e40_98.6830.pth"
+    )
     cvgl_model, device = initialize_cvgl_model(checkpoint_path)
 
     # Build reference database from graph nodes
-    # Note: This assumes you have images and GPS coordinates for reference nodes
-    # In practice, you would use satellite imagery or street view data
+    # Load all satellite images from the Kitti graph nodes
     print("   Building reference database from graph nodes...")
     reference_coords = []
+    reference_images = []
 
-    # Example: Use a subset of graph nodes as reference database
-    # In real deployment, you'd have pre-collected reference imagery
-    sample_nodes = list(data.graph.nodes())[:100]  # Sample first 100 nodes
-    for node_id in tqdm(sample_nodes, desc="   Processing reference nodes"):
+    # Use all graph nodes as reference database
+    all_nodes = list(data.graph.nodes())
+    for node_id in tqdm(all_nodes, desc="   Processing reference nodes"):
         node_data = data.graph.nodes[node_id]
         lat, lon = node_data["y"], node_data["x"]
 
-        reference_coords.append([lat, lon])
+        # Get satellite image path from node data
+        sat_image_path = node_data.get("sat_image")
 
-    # TODO: Build the reference database when reference images are available
-    # Example code for when you have reference images:
-    #
-    # reference_images = []
-    # for node_id in sample_nodes:
-    #     # Load reference image (satellite or street view)
-    #     ref_img = load_reference_image(node_id)  # Returns (H, W, 3) RGB [0, 255]
-    #     reference_images.append(ref_img)
-    #
-    # reference_coords_array = np.array(reference_coords)
-    # cvgl_model.build_reference_database(
-    #     images=reference_images,
-    #     coordinates=reference_coords_array,
-    #     use_utm=True,  # IMPORTANT: Use UTM for consistent global frame
-    #     device=device,
-    #     batch_size=32,
-    # )
-    # print(f"   Reference database built with {len(reference_images)} images")
-    # print(f"   UTM Zone: {cvgl_model.utm_zone}{cvgl_model.utm_letter}")
+        if sat_image_path is None:
+            print(f"   Warning: Node {node_id} has no satellite image, skipping")
+            continue
 
-    cvgl_enabled = False  # Set to True when reference database is built
+        # Load satellite image
+        try:
+            sat_img = Image.open(sat_image_path)
+            sat_img_np = np.array(sat_img)  # Returns (H, W, 3) RGB [0, 255]
+
+            # Store coordinates and image
+            reference_coords.append([lat, lon])
+            reference_images.append(sat_img_np)
+        except Exception as e:
+            print(f"   Warning: Failed to load satellite image for node {node_id}: {e}")
+            continue
+
+    reference_coords_array = np.array(reference_coords)
+    cvgl_model.build_reference_database(
+        images=reference_images,
+        coordinates=reference_coords_array,
+        use_utm=True,  # IMPORTANT: Use UTM for consistent global frame
+        device=device,
+        batch_size=32,
+    )
+    print(f"   Reference database built with {len(reference_images)} images")
+    print(f"   UTM Zone: {cvgl_model.utm_zone}{cvgl_model.utm_letter}")
+
+    cvgl_enabled = True  # Set to True when reference database is built
     use_utm_frame = True  # Use UTM coordinates for absolute measurements
     print(f"   CVGL localization: {'enabled' if cvgl_enabled else 'disabled (using GPS GT)'}")
     print(f"   Coordinate frame: {'UTM (absolute)' if use_utm_frame else 'Local tangent plane'}")
@@ -273,7 +292,6 @@ def main() -> None:
         trajectories["imu"].append([next_pose_gtsam.x(), next_pose_gtsam.y()])
 
         # Add new pose to graph
-        # timestamp = idx * 0.1  # Approximate timestamp
         next_pose_id = graph.add_pose_estimate(next_pose_gtsam, timestamp=timestamp)
 
         # Add between factor (odometry constraint from IMU)
@@ -295,8 +313,8 @@ def main() -> None:
                 data=data,
                 turns=turns,
                 angle_tolerance=np.radians(20),  # radians
-                verbose=True,
-                output_path=output_dir / f"frame_{len(turns.entry_angles)}.jpg",
+                verbose=False,
+                # output_path=output_dir / f"frame_{len(turns.entry_angles)}.jpg",
                 frame_idx=idx,
             )
 

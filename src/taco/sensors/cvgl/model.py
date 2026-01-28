@@ -1,4 +1,40 @@
-"""PyTorch Lightning model for image retrieval using ConvNeXt."""
+"""PyTorch Lightning model for image retrieval with flexible encoder support.
+
+This module provides ImageRetrievalModel, a flexible image retrieval model that accepts
+any encoder architecture for visual place recognition tasks.
+
+Quick Start (Recommended):
+    >>> from taco.sensors.cvgl import ImageRetrievalModel, ImageRetrievalModelConfig
+    >>>
+    >>> # Create config
+    >>> config = ImageRetrievalModelConfig(embedding_dim=512, loss_type="ntxent")
+    >>>
+    >>> # Method 1: Use Sample4Geo encoder (recommended default)
+    >>> model = ImageRetrievalModel.from_sample4geo(
+    ...     config=config,
+    ...     model_name="resnet50",
+    ...     img_size=384,
+    ... )
+    >>>
+    >>> # Method 2: Load pre-trained weights
+    >>> model = ImageRetrievalModel.from_sample4geo(
+    ...     config=config,
+    ...     model_name="resnet50",
+    ...     encoder_weights_path="path/to/encoder.pth",
+    ... )
+    >>>
+    >>> # Method 3: Load full checkpoint
+    >>> model = ImageRetrievalModel.load_from_checkpoint(
+    ...     checkpoint_path="path/to/model.ckpt",
+    ...     model_name="resnet50",
+    ... )
+
+Advanced Usage:
+    For custom encoders, use the ImageRetrievalModel constructor directly:
+    >>> from taco.sensors.cvgl import create_sample4geo_encoder
+    >>> encoder = create_sample4geo_encoder("vit_base_patch16_224", img_size=224)
+    >>> model = ImageRetrievalModel(encoder=encoder, config=config)
+"""
 
 from dataclasses import dataclass
 from typing import Any, Literal, Tuple
@@ -28,11 +64,9 @@ class ImageRetrievalModelConfig:
 
     Args:
         embedding_dim: Dimension of the output embedding
-        pretrained: Whether to use pretrained ConvNeXt weights
         learning_rate: Learning rate for optimizer
         temperature: Temperature for contrastive loss
         margin: Margin for triplet loss
-        freeze_backbone: If True, freeze ConvNeXt backbone weights
         loss_type: Type of loss function to use ('combined', 'ntxent', 'triplet')
         scheduler_type: Type of learning rate scheduler ('cosine', 'step', 'plateau', 'none')
         scheduler_t_max: T_max for cosine annealing (number of epochs for full cycle)
@@ -43,11 +77,9 @@ class ImageRetrievalModelConfig:
     """
 
     embedding_dim: int = 512
-    pretrained: bool = True
     learning_rate: float = 1e-4
     temperature: float = 0.07
     margin: float = 0.2
-    freeze_backbone: bool = False
     loss_type: Literal["combined", "ntxent", "triplet"] = "ntxent"
     scheduler_type: Literal["cosine", "step", "plateau", "none"] = "cosine"
     scheduler_t_max: int = 100
@@ -58,55 +90,49 @@ class ImageRetrievalModelConfig:
 
 
 class ImageRetrievalModel(L.LightningModule):
-    """PyTorch Lightning model for image retrieval using ConvNeXt-Tiny.
+    """PyTorch Lightning model for image retrieval with flexible encoder backbone.
 
-    Uses a pre-trained ConvNeXt-Tiny backbone to encode images into
-    low-dimensional descriptors for visual place recognition.
+    Accepts any encoder module to encode images into low-dimensional descriptors
+    for visual place recognition. This allows using various pre-trained models
+    from academic papers (e.g., ConvNeXt, ResNet, ViT, NetVLAD, etc.).
 
     Args:
+        encoder: PyTorch module that takes images (B, C, H, W) and returns features.
+            The encoder should output features of shape (B, D) or (B, D, H', W')
+            which will be automatically flattened and processed by the projection head.
         config: ImageRetrievalModelConfig object containing all configuration parameters
+        backbone_dim: Optional explicit feature dimension of the encoder output.
+            If None, will be inferred by running a dummy forward pass with a (1, 3, 224, 224) input.
     """
 
-    def __init__(self, config: ImageRetrievalModelConfig) -> None:
+    def __init__(
+        self,
+        encoder: nn.Module,
+        config: ImageRetrievalModelConfig,
+        backbone_dim: int | None = None,
+    ) -> None:
         """Initialize the image retrieval model.
 
         Args:
+            encoder: PyTorch module that encodes images to features
             config: ImageRetrievalModelConfig object containing all configuration parameters
+            backbone_dim: Optional explicit feature dimension. If None, inferred automatically.
         """
         super().__init__()
         self.config = config
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=["encoder"])
 
-        # Load pre-trained ConvNeXt-Tiny
-        weights = models.ConvNeXt_Tiny_Weights.DEFAULT if config.pretrained else None
-        convnext = models.convnext_tiny(weights=weights)
+        # Store the encoder
+        self.encoder = encoder
 
-        # ConvNeXt-Tiny structure:
-        # - features: the convolutional backbone
-        # - avgpool: adaptive average pooling
-        # - classifier: Sequential(LayerNorm, Flatten, Linear)
-
-        # We want to use everything except the final Linear layer
-        # Keep: features + avgpool + LayerNorm + Flatten
-        self.backbone = nn.Sequential(
-            convnext.features,
-            convnext.avgpool,
-        )
-
-        # Get the feature dimension after pooling
-        # ConvNeXt-Tiny: after avgpool, features are (batch, 768, 1, 1)
-        # After flatten: (batch, 768)
-        backbone_dim = 768
-
-        # Freeze backbone if requested
-        if config.freeze_backbone:
-            for param in self.backbone.parameters():
-                param.requires_grad = False
+        # Infer backbone dimension if not provided
+        if backbone_dim is None:
+            backbone_dim = self._infer_backbone_dim()
 
         # Projection head to map to embedding dimension
         self.projection_head = nn.Sequential(
-            nn.Flatten(),  # Flatten (B, 768, 1, 1) -> (B, 768)
-            nn.LayerNorm(backbone_dim),  # LayerNorm like original ConvNeXt
+            nn.Flatten(),  # Flatten (B, D, H, W) -> (B, D) or keep (B, D)
+            nn.LayerNorm(backbone_dim),
             nn.Linear(backbone_dim, 1024),
             nn.BatchNorm1d(1024),
             nn.ReLU(inplace=True),
@@ -130,6 +156,300 @@ class ImageRetrievalModel(L.LightningModule):
         self.utm_zone: int | None = None  # UTM zone number
         self.utm_letter: str | None = None  # UTM zone letter
 
+    def _infer_backbone_dim(self) -> int:
+        """Infer the backbone output dimension by running a dummy forward pass.
+
+        Returns:
+            Feature dimension of the encoder output after flattening.
+        """
+        # Create a dummy input (1, 3, 224, 224)
+        dummy_input = torch.randn(1, 3, 224, 224)
+
+        # Run encoder in eval mode
+        self.encoder.eval()
+        with torch.no_grad():
+            features = self.encoder(dummy_input)
+
+        # Flatten and get the dimension
+        if len(features.shape) == 4:  # (B, C, H, W)
+            backbone_dim = features.shape[1] * features.shape[2] * features.shape[3]
+        elif len(features.shape) == 2:  # (B, D)
+            backbone_dim = features.shape[1]
+        else:
+            raise ValueError(
+                f"Unexpected encoder output shape: {features.shape}. "
+                f"Expected (B, D) or (B, C, H, W)"
+            )
+
+        return backbone_dim
+
+    @classmethod
+    def from_sample4geo(
+        cls,
+        config: ImageRetrievalModelConfig,
+        model_name: str = "resnet50",
+        pretrained: bool = True,
+        img_size: int = 384,
+        freeze_encoder: bool = False,
+        encoder_weights_path: str | None = None,
+    ) -> "ImageRetrievalModel":
+        """Create ImageRetrievalModel with Sample4Geo encoder (recommended).
+
+        This is a convenience method for creating an ImageRetrievalModel with the
+        Sample4GeoEncoder, which is the recommended default encoder.
+
+        Args:
+            config: ImageRetrievalModelConfig object
+            model_name: Name of the timm model (default: 'resnet50')
+            pretrained: Whether to load pretrained ImageNet weights
+            img_size: Input image size (default: 384)
+            freeze_encoder: If True, freeze encoder weights
+            encoder_weights_path: Optional path to custom encoder weights
+
+        Returns:
+            ImageRetrievalModel instance with Sample4GeoEncoder
+
+        Example:
+            >>> config = ImageRetrievalModelConfig(embedding_dim=512)
+            >>> model = ImageRetrievalModel.from_sample4geo(
+            ...     config=config,
+            ...     model_name="resnet50",
+            ...     encoder_weights_path="path/to/weights.pth"
+            ... )
+        """
+        encoder = create_sample4geo_encoder(
+            model_name=model_name,
+            pretrained=pretrained,
+            img_size=img_size,
+            freeze=freeze_encoder,
+            weights_path=encoder_weights_path,
+        )
+        return cls(encoder=encoder, config=config)
+
+    @staticmethod
+    def _infer_encoder_from_checkpoint(state_dict: dict) -> tuple[str, bool]:
+        """Infer encoder architecture from checkpoint state dict keys.
+
+        Args:
+            state_dict: Model state dictionary
+
+        Returns:
+            Tuple of (model_name, is_encoder_only)
+            - model_name: Inferred encoder architecture name
+            - is_encoder_only: True if checkpoint contains only encoder weights (Sample4Geo style)
+        """
+        # Check if this is a full model checkpoint (with encoder. prefix)
+        encoder_keys = [k for k in state_dict.keys() if k.startswith("encoder.")]
+
+        if encoder_keys:
+            # Full model checkpoint with "encoder." prefix
+            # Infer from key patterns
+            if any("stem" in k for k in encoder_keys):
+                model_name = "convnext_base.fb_in22k_ft_in1k_384"
+                print(f"Inferred encoder architecture: {model_name} (ConvNeXt-based)")
+            elif any("patch_embed" in k for k in encoder_keys):
+                model_name = "vit_base_patch16_224"
+                print(f"Inferred encoder architecture: {model_name} (ViT-based)")
+            else:
+                model_name = "resnet50"
+                print(f"Could not infer encoder, using default: {model_name}")
+            return model_name, False
+
+        # Check if this is an encoder-only checkpoint (Sample4Geo style, no prefix)
+        # Look for encoder-specific keys without the "encoder." prefix
+        all_keys = list(state_dict.keys())
+
+        if any("model.stem" in k for k in all_keys) or any("stem.0" in k for k in all_keys):
+            model_name = "convnext_base.fb_in22k_ft_in1k_384"
+            print(f"Detected Sample4Geo encoder checkpoint: {model_name} (ConvNeXt-based)")
+            return model_name, True
+        elif any("model.patch_embed" in k for k in all_keys) or any(
+            "patch_embed" in k for k in all_keys
+        ):
+            model_name = "vit_base_patch16_224"
+            print(f"Detected Sample4Geo encoder checkpoint: {model_name} (ViT-based)")
+            return model_name, True
+        elif any("model.layer" in k for k in all_keys) or any("layer1" in k for k in all_keys):
+            model_name = "resnet50"
+            print(f"Detected Sample4Geo encoder checkpoint: {model_name} (ResNet-based)")
+            return model_name, True
+        else:
+            print("Warning: Could not infer encoder architecture, using default: resnet50")
+            return "resnet50", False
+
+    @staticmethod
+    def _infer_config_from_state_dict(state_dict: dict) -> ImageRetrievalModelConfig:
+        """Infer config from state dict by examining layer shapes.
+
+        Args:
+            state_dict: Model state dictionary
+
+        Returns:
+            ImageRetrievalModelConfig instance with inferred parameters
+        """
+        config = ImageRetrievalModelConfig()
+
+        # Try to infer embedding_dim from projection head output layer
+        if "projection_head.6.weight" in state_dict:
+            # projection_head.6 is the final linear layer: Linear(1024, embedding_dim)
+            embedding_dim = state_dict["projection_head.6.weight"].shape[0]
+            config.embedding_dim = int(embedding_dim)
+            print(f"Inferred embedding_dim={embedding_dim} from state dict")
+        elif "projection_head.4.weight" in state_dict:
+            # Alternative structure
+            embedding_dim = state_dict["projection_head.4.weight"].shape[0]
+            config.embedding_dim = int(embedding_dim)
+            print(f"Inferred embedding_dim={embedding_dim} from state dict")
+
+        return config
+
+    @staticmethod
+    def _extract_config_from_checkpoint(checkpoint: dict) -> ImageRetrievalModelConfig:
+        """Extract config from checkpoint hyperparameters.
+
+        Args:
+            checkpoint: Loaded checkpoint dictionary
+
+        Returns:
+            ImageRetrievalModelConfig instance
+        """
+        if "hyper_parameters" in checkpoint and "config" in checkpoint["hyper_parameters"]:
+            return ImageRetrievalModelConfig(**checkpoint["hyper_parameters"]["config"])
+        return ImageRetrievalModelConfig()
+
+    @staticmethod
+    def _report_loading_status(
+        missing_keys: list, unexpected_keys: list, checkpoint_path: str, strict: bool
+    ) -> None:
+        """Report status of checkpoint loading.
+
+        Args:
+            missing_keys: List of missing keys in state dict
+            unexpected_keys: List of unexpected keys in state dict
+            checkpoint_path: Path to the checkpoint file
+            strict: Whether strict loading was enforced
+        """
+        if missing_keys:
+            print(f"Warning: Missing keys in checkpoint: {len(missing_keys)} keys")
+            for key in missing_keys[:10]:
+                print(f"  - {key}")
+
+        if unexpected_keys:
+            print(f"Warning: Unexpected keys in checkpoint: {len(unexpected_keys)} keys")
+            for key in unexpected_keys[:10]:
+                print(f"  - {key}")
+
+        if not missing_keys and not unexpected_keys:
+            print(f"✓ Successfully loaded full model from {checkpoint_path}")
+        else:
+            print(f"⚠ Loaded model from {checkpoint_path} with warnings (strict={strict})")
+
+    @classmethod
+    def load_from_checkpoint(
+        cls,
+        checkpoint_path: str,
+        model_name: str | None = None,
+        img_size: int = 384,
+        map_location: str | torch.device = "cpu",
+        strict: bool = False,
+        config: ImageRetrievalModelConfig | None = None,
+    ) -> "ImageRetrievalModel":
+        """Load a full ImageRetrievalModel from a checkpoint file.
+
+        This method loads both the encoder and projection head weights from a
+        previously trained ImageRetrievalModel checkpoint. Follows Sample4Geo's
+        loading pattern for compatibility.
+
+        Args:
+            checkpoint_path: Path to the checkpoint file (.ckpt or .pth)
+            model_name: Name of the encoder model. If None, attempts to infer from checkpoint.
+                Must match the architecture used during training.
+            img_size: Input image size (must match the checkpoint)
+            map_location: Device to load the checkpoint onto
+            strict: Whether to strictly enforce that state_dict keys match.
+                Set to False for more flexible loading (default: False)
+            config: Optional config to use. If None, will try to extract from checkpoint
+                or use default config.
+
+        Returns:
+            ImageRetrievalModel instance with loaded weights
+
+        Example:
+            >>> # Auto-detect encoder (recommended)
+            >>> model = ImageRetrievalModel.load_from_checkpoint(
+            ...     checkpoint_path="path/to/model.ckpt",
+            ...     img_size=384
+            ... )
+            >>>
+            >>> # Or specify encoder explicitly
+            >>> model = ImageRetrievalModel.load_from_checkpoint(
+            ...     checkpoint_path="path/to/model.ckpt",
+            ...     model_name="resnet50",
+            ...     img_size=384
+            ... )
+        """
+        print(f"Loading from: {checkpoint_path}")
+
+        # Load checkpoint - Sample4Geo style
+        model_state_dict = torch.load(checkpoint_path, map_location=map_location)
+
+        # Handle different checkpoint formats
+        # If it's a PyTorch Lightning checkpoint with "state_dict" key, extract it
+        if isinstance(model_state_dict, dict) and "state_dict" in model_state_dict:
+            checkpoint_dict = model_state_dict
+            model_state_dict = checkpoint_dict["state_dict"]
+        else:
+            checkpoint_dict = {}
+
+        # Infer model name if not provided
+        is_encoder_only = False
+        if model_name is None:
+            model_name, is_encoder_only = cls._infer_encoder_from_checkpoint(model_state_dict)
+        else:
+            # Check if it's encoder-only even when model_name is provided
+            _, is_encoder_only = cls._infer_encoder_from_checkpoint(model_state_dict)
+
+        # Get or create config
+        if config is None:
+            if checkpoint_dict and ("hyper_parameters" in checkpoint_dict):
+                # PyTorch Lightning checkpoint with hyperparameters
+                config = cls._extract_config_from_checkpoint(checkpoint_dict)
+            else:
+                # Raw state dict - infer config from weights if not encoder-only
+                if not is_encoder_only:
+                    config = cls._infer_config_from_state_dict(model_state_dict)
+                else:
+                    config = ImageRetrievalModelConfig()
+
+        # Create encoder and model
+        if is_encoder_only:
+            # Load encoder-only checkpoint (Sample4Geo style)
+            encoder = create_sample4geo_encoder(
+                model_name=model_name,
+                pretrained=False,
+                img_size=img_size,
+                freeze=False,
+                weights_path=checkpoint_path,  # Load weights directly
+            )
+            model = cls(encoder=encoder, config=config)
+            print(f"✓ Loaded encoder-only checkpoint from {checkpoint_path}")
+            return model
+        else:
+            # Load full model checkpoint
+            encoder = create_sample4geo_encoder(
+                model_name=model_name,
+                pretrained=False,
+                img_size=img_size,
+                freeze=False,
+            )
+            model = cls(encoder=encoder, config=config)
+
+            # Load state dict - Sample4Geo style with strict=False by default
+            missing_keys, unexpected_keys = model.load_state_dict(model_state_dict, strict=strict)
+            cls._report_loading_status(missing_keys, unexpected_keys, checkpoint_path, strict)
+
+        return model
+
     def forward(self, images: Tensor) -> Tensor:
         """Forward pass to compute image embeddings.
 
@@ -139,8 +459,8 @@ class ImageRetrievalModel(L.LightningModule):
         Returns:
             Normalized embeddings (B, embedding_dim).
         """
-        # Extract features from backbone
-        features = self.backbone(images)
+        # Extract features from encoder
+        features = self.encoder(images)
 
         # Project to embedding dimension
         embeddings = self.projection_head(features)
@@ -626,8 +946,7 @@ class ImageRetrievalModel(L.LightningModule):
             # Convert first coordinate to determine UTM zone
             if not UTM_AVAILABLE:
                 raise ImportError(
-                    "utm package is required for UTM conversion. "
-                    "Install it with: pip install utm"
+                    "utm package is required for UTM conversion. Install it with: pip install utm"
                 )
             _, _, zone_number, zone_letter = utm.from_latlon(coordinates[0, 0], coordinates[0, 1])
             self.utm_zone = zone_number
@@ -941,9 +1260,6 @@ class ImageRetrievalModel(L.LightningModule):
                 "Reference database has not been built. Call build_reference_database() first."
             )
 
-        if self.reference_origin is None:
-            raise RuntimeError("Reference origin not set. This should not happen.")
-
         # Query the database
         top_gps_coords, top_similarities = self.query_database(
             query_image=query_image,
@@ -1021,11 +1337,15 @@ class ImageRetrievalModel(L.LightningModule):
             base_position_std=base_position_std,
         )
 
+        # Add geographic coordinates for debug
+        coord = top_gps_coords[0]  # Use top match GPS for reference
+
         # Create CVGLMeasurement (position-only)
         measurement = CVGLMeasurement(
             timestamp=timestamp,
             position=position,
             position_covariance=position_covariance,
+            coordinates=coord,
             confidence=float(np.clip(top_similarities[0], 0.0, 1.0)),
             num_inliers=top_k,  # Use top_k as a proxy for inliers
             yaw=current_yaw,  # Store current yaw from IMU (not estimated)
@@ -1035,6 +1355,141 @@ class ImageRetrievalModel(L.LightningModule):
         return measurement
 
 
+def create_convnext_encoder(pretrained: bool = True, freeze: bool = False) -> nn.Module:
+    """Create a ConvNeXt-Tiny encoder for image retrieval.
+
+    Args:
+        pretrained: Whether to use pretrained ConvNeXt weights
+        freeze: If True, freeze encoder weights
+
+    Returns:
+        Encoder module that outputs features (B, 768, 1, 1)
+    """
+    weights = models.ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None
+    convnext = models.convnext_tiny(weights=weights)
+
+    # Create encoder from ConvNeXt features and avgpool
+    encoder = nn.Sequential(
+        convnext.features,
+        convnext.avgpool,
+    )
+
+    # Freeze encoder if requested
+    if freeze:
+        for param in encoder.parameters():
+            param.requires_grad = False
+
+    return encoder
+
+
+def create_sample4geo_encoder(
+    model_name: str = "resnet50",
+    pretrained: bool = True,
+    img_size: int = 384,
+    freeze: bool = False,
+    weights_path: str | None = None,
+) -> nn.Module:
+    """Create a Sample4Geo encoder for image retrieval (recommended default).
+
+    This is the recommended encoder for ImageRetrievalModel. It uses the Sample4GeoEncoder
+    from sample4geo/model.py, which wraps timm models with L2 normalization.
+
+    Args:
+        model_name: Name of the timm model. Examples:
+            - 'resnet50', 'resnet101'
+            - 'vit_base_patch16_224', 'vit_large_patch16_224'
+            - 'convnext_base', 'convnext_large'
+            - 'swin_base_patch4_window7_224'
+            - See https://github.com/huggingface/pytorch-image-models for full list
+        pretrained: Whether to load pretrained ImageNet weights from timm
+        img_size: Input image size (especially important for ViT models)
+        freeze: If True, freeze encoder weights
+        weights_path: Optional path to custom trained weights (.pth or .ckpt file).
+            If provided, loads these weights after initialization.
+
+    Returns:
+        Encoder module that outputs normalized features (B, D) where D depends on the model
+    """
+    from taco.sensors.cvgl.sample4geo.model import Sample4GeoEncoder
+
+    encoder = Sample4GeoEncoder(
+        model_name=model_name,
+        pretrained=pretrained,
+        img_size=img_size,
+        freeze=freeze,
+    )
+
+    # Load custom weights if provided
+    if weights_path is not None:
+        state_dict = torch.load(weights_path, map_location="cpu")
+
+        # Handle different checkpoint formats
+        if isinstance(state_dict, dict) and "state_dict" in state_dict:
+            # PyTorch Lightning checkpoint
+            state_dict = state_dict["state_dict"]
+
+        # Process state dict based on key structure
+        encoder_state_dict = {}
+
+        # Check if keys have "encoder." prefix (full model checkpoint)
+        has_encoder_prefix = any(k.startswith("encoder.") for k in state_dict.keys())
+
+        if has_encoder_prefix:
+            # Full model checkpoint - extract encoder weights
+            for key, value in state_dict.items():
+                if key.startswith("encoder."):
+                    # Remove 'encoder.' prefix
+                    new_key = key.replace("encoder.", "", 1)
+                    encoder_state_dict[new_key] = value
+        else:
+            # Sample4Geo encoder-only checkpoint (no prefix) - use as-is
+            encoder_state_dict = state_dict
+
+        # Load with strict=False to allow partial loading
+        missing_keys, unexpected_keys = encoder.load_state_dict(encoder_state_dict, strict=False)
+
+        if missing_keys or unexpected_keys:
+            print(f"Loaded encoder weights from {weights_path} (strict=False)")
+            if missing_keys and len(missing_keys) <= 5:
+                print(f"  Missing keys: {missing_keys[:5]}")
+            if unexpected_keys and len(unexpected_keys) <= 5:
+                print(f"  Unexpected keys: {unexpected_keys[:5]}")
+        else:
+            print(f"✓ Loaded encoder weights from {weights_path}")
+
+    return encoder
+
+
+def create_timm_encoder(
+    model_name: str = "resnet50",
+    pretrained: bool = True,
+    img_size: int = 384,
+    freeze: bool = False,
+) -> nn.Module:
+    """Create a basic timm model encoder for image retrieval.
+
+    Note: For most use cases, use create_sample4geo_encoder() instead, which includes
+    L2 normalization in the encoder.
+
+    Args:
+        model_name: Name of the timm model
+        pretrained: Whether to load pretrained weights
+        img_size: Input image size (especially important for ViT models)
+        freeze: If True, freeze encoder weights
+
+    Returns:
+        Encoder module that outputs features (B, D) where D depends on the model
+    """
+    from taco.sensors.cvgl.sample4geo.model import Sample4GeoEncoder
+
+    return Sample4GeoEncoder(
+        model_name=model_name,
+        pretrained=pretrained,
+        img_size=img_size,
+        freeze=freeze,
+    )
+
+
 if __name__ == "__main__":
     # Example usage
     import numpy as np
@@ -1042,24 +1497,85 @@ if __name__ == "__main__":
     # Create configuration with NT-Xent loss
     config = ImageRetrievalModelConfig(
         embedding_dim=512,
-        pretrained=True,
         learning_rate=1e-4,
         temperature=0.07,
         margin=0.2,
-        freeze_backbone=False,
         loss_type="ntxent",  # Options: "combined", "ntxent", "triplet"
     )
 
-    # Create model with config
-    model = ImageRetrievalModel(config)
+    print("=" * 60)
+    print("Example 1: Sample4Geo Encoder (RECOMMENDED DEFAULT)")
+    print("=" * 60)
+
+    # Method 1: Using the convenience class method (easiest)
+    model_default = ImageRetrievalModel.from_sample4geo(
+        config=config,
+        model_name="resnet50",
+        pretrained=True,
+        img_size=384,
+    )
     print(f"Model created with embedding_dim={config.embedding_dim}, loss_type={config.loss_type}")
 
     # Test forward pass
-    dummy_image = torch.randn(2, 3, 224, 224)
-    embeddings = model(dummy_image)
+    dummy_image = torch.randn(2, 3, 384, 384)
+    embeddings = model_default(dummy_image)
     print(f"Embeddings shape: {embeddings.shape}")
 
     # Test encoding a single image
-    test_image = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
-    embedding = model.encode_image(test_image)
+    test_image = np.random.randint(0, 255, (384, 384, 3), dtype=np.uint8)
+    embedding = model_default.encode_image(test_image)
     print(f"Single image embedding shape: {embedding.shape}")
+
+    print("\n" + "=" * 60)
+    print("Example 2: Loading Custom Encoder Weights")
+    print("=" * 60)
+
+    # Load model with custom pre-trained encoder weights
+    # Uncomment to use with your own encoder weights:
+    # model_custom = ImageRetrievalModel.from_sample4geo(
+    #     config=config,
+    #     model_name="resnet50",
+    #     pretrained=True,  # Start with ImageNet weights
+    #     encoder_weights_path="/path/to/your/encoder_weights.pth",
+    # )
+    print("Example: Load custom encoder weights with encoder_weights_path parameter")
+
+    # Or load a full model checkpoint (encoder + projection head):
+    # model_full = ImageRetrievalModel.load_from_checkpoint(
+    #     checkpoint_path="/path/to/your/model_checkpoint.ckpt",
+    #     model_name="resnet50",
+    #     img_size=384,
+    # )
+    print("Example: Load full model checkpoint with load_from_checkpoint()")
+
+    print("\n" + "=" * 60)
+    print("Example 3: Using Different Timm Models")
+    print("=" * 60)
+
+    # Method 2: Create encoder manually (more flexible)
+    encoder_vit = create_sample4geo_encoder(
+        model_name="vit_base_patch16_224", pretrained=True, img_size=224, freeze=False
+    )
+
+    model_vit = ImageRetrievalModel(encoder=encoder_vit, config=config)
+    print("Model created with ViT-Base encoder")
+
+    # Test forward pass
+    dummy_image_224 = torch.randn(2, 3, 224, 224)
+    embeddings = model_vit(dummy_image_224)
+    print(f"Embeddings shape: {embeddings.shape}")
+
+    print("\n" + "=" * 60)
+    print("Example 4: ConvNeXt-Tiny Encoder (torchvision)")
+    print("=" * 60)
+
+    # Using torchvision ConvNeXt instead of timm
+    encoder_convnext = create_convnext_encoder(pretrained=True, freeze=False)
+
+    # backbone_dim=768 for ConvNeXt-Tiny (can be inferred automatically if omitted)
+    model_convnext = ImageRetrievalModel(encoder=encoder_convnext, config=config, backbone_dim=768)
+    print("Model created with ConvNeXt-Tiny encoder")
+
+    # Test forward pass
+    embeddings = model_convnext(dummy_image_224)
+    print(f"Embeddings shape: {embeddings.shape}")
