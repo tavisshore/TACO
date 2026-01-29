@@ -284,11 +284,12 @@ def main():
     # Create trainer
     print("\nStarting training...")
     trainer = L.Trainer(
-        max_epochs=100,
+        max_epochs=40,
         accelerator="auto",
         devices=1,
         callbacks=[checkpoint_callback, early_stop, shuffle_callback],
         logger=wandb_logger,
+        check_val_every_n_epoch=1,  # Run validation every epoch
     )
 
     # Train
@@ -296,6 +297,11 @@ def main():
 
     print("\n✓ Training complete!")
     print(f"Best checkpoint: {checkpoint_callback.best_model_path}")
+
+    # Save final model
+    final_model_path = Path("weights/custom") / "retrieval_final_model.pth"
+    torch.save(model.state_dict(), final_model_path)
+    print(f"Final model saved to: {final_model_path}")
 
 
 if __name__ == "__main__":

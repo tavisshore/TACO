@@ -53,7 +53,7 @@ class CVUSADatasetConfig:
     shuffle_batch_size: int = 128
     use_gnomonic_projection: bool = True
     gnomonic_fov_deg: float = 120.0
-    gnomonic_output_shape: Tuple[int, int] = (224, 224)
+    gnomonic_output_shape: Tuple[int, int] = (384, 384)
     random_heading: bool = False
     random_pitch: bool = False
     pitch_range: Tuple[float, float] = (-10.0, 10.0)
@@ -62,7 +62,7 @@ class CVUSADatasetConfig:
     heading_csv_offset: int = 0
     rotate_reference_by_heading: bool = True
     crop_rotated_reference: bool = True
-    network_input_size: Tuple[int, int] = (224, 224)
+    network_input_size: Tuple[int, int] = (384, 384)
 
 
 class CVUSADataset(Dataset):

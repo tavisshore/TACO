@@ -157,9 +157,7 @@ def main() -> None:
 
     # Initialize CVGL model
     print("\n2.5. Initialising CVGL localization model...")
-    checkpoint_path = Path(
-        "weights/sample4geo/cvusa/convnext_base.fb_in22k_ft_in1k_384/weights_e40_98.6830.pth"
-    )
+    checkpoint_path = Path("weights/custom/retrieval_final_model.pth")
     cvgl_model, device = initialize_cvgl_model(checkpoint_path)
 
     # Build reference database from graph nodes
