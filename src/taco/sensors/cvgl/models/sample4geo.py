@@ -1,22 +1,19 @@
-import time
-
+import lightning.pytorch as pl
 import numpy as np
 import timm
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
-from torch.cuda.amp import autocast
-from tqdm import tqdm
 
 
-class TimmModel(nn.Module):
-    def __init__(self, model_name, pretrained=True, img_size=383):
-        super(TimmModel, self).__init__()
+class TimmModel(pl.LightningModule):
+    def __init__(self, model_name, pretrained=True, img_size=383, lr=1e-3):
+        super().__init__()
+        self.save_hyperparameters()
 
         self.img_size = img_size
+        self.lr = lr
 
         if "vit" in model_name:
-            # automatically change interpolate pos-encoding to img_size
             self.model = timm.create_model(
                 model_name, pretrained=pretrained, num_classes=0, img_size=img_size
             )
@@ -25,11 +22,8 @@ class TimmModel(nn.Module):
 
         self.logit_scale = torch.nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-    def get_config(
-        self,
-    ):
-        data_config = timm.data.resolve_model_data_config(self.model)
-        return data_config
+    def get_config(self):
+        return timm.data.resolve_model_data_config(self.model)
 
     def set_grad_checkpointing(self, enable=True):
         self.model.set_grad_checkpointing(enable)
@@ -38,28 +32,37 @@ class TimmModel(nn.Module):
         if img2 is not None:
             image_features1 = self.model(img1)
             image_features2 = self.model(img2)
-
             return image_features1, image_features2
-
         else:
-            image_features = self.model(img1)
+            return self.model(img1)
 
-            return image_features
+    def training_step(self, batch, batch_idx):
+        # Adjust based on your batch structure
+        img1, img2, labels = batch  # or however your data is structured
+        feat1, feat2 = self(img1, img2)
+
+        # Add your loss computation here
+        loss = self.compute_loss(feat1, feat2, labels)
+        self.log("train_loss", loss, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        img1, img2, labels = batch
+        feat1, feat2 = self(img1, img2)
+        loss = self.compute_loss(feat1, feat2, labels)
+        self.log("val_loss", loss, prog_bar=True)
+        return loss
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
+        return optimizer
+
+    def compute_loss(self, feat1, feat2, labels):
+        # Placeholder - implement your actual loss
+        raise NotImplementedError("Implement your loss function")
 
 
-class Sample4GeoEncoder(nn.Module):
-    """Wrapper for TimmModel to use as encoder in ImageRetrievalModel.
-
-    This adapter class makes TimmModel compatible with the encoder interface
-    expected by ImageRetrievalModel, which requires a single-image forward pass.
-
-    Args:
-        model_name: Name of the timm model (e.g., 'resnet50', 'vit_base_patch16_224')
-        pretrained: Whether to load pretrained weights
-        img_size: Input image size (important for ViT models)
-        freeze: If True, freeze all encoder parameters
-    """
-
+class Sample4GeoEncoder(pl.LightningModule):
     def __init__(
         self,
         model_name: str,

@@ -8,7 +8,6 @@ from .model import (
     ImageRetrievalModelConfig,
     create_convnext_encoder,
     create_sample4geo_encoder,
-    create_timm_encoder,
 )
 
 __all__ = [
@@ -20,5 +19,4 @@ __all__ = [
     "ImageRetrievalModelConfig",
     "create_sample4geo_encoder",
     "create_convnext_encoder",
-    "create_timm_encoder",
 ]

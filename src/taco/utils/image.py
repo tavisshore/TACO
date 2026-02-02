@@ -95,7 +95,7 @@ def gnomonic_projection(
 
     # Create output pixel coordinates (centered at 0)
     x_coords = np.linspace(-1, 1, w_out)
-    y_coords = np.linspace(-1, 1, h_out)
+    y_coords = np.linspace(1, -1, h_out)  # Top = +1 (up), Bottom = -1 (down)
     x_grid, y_grid = np.meshgrid(x_coords, y_coords)
 
     # Convert to 3D ray directions in camera space (gnomonic projection)

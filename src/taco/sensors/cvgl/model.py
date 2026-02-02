@@ -41,6 +41,7 @@ from typing import Any, Literal, Tuple
 
 import gtsam
 import lightning as L
+import lightning.pytorch as pl
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -108,7 +109,7 @@ class ImageRetrievalModel(L.LightningModule):
 
     def __init__(
         self,
-        encoder: nn.Module,
+        encoder: pl.LightningModule,
         config: ImageRetrievalModelConfig,
         backbone_dim: int | None = None,
     ) -> None:
@@ -155,7 +156,15 @@ class ImageRetrievalModel(L.LightningModule):
         )
         self.use_utm: bool = False  # Whether to use UTM coordinates
         self.utm_zone: int | None = None  # UTM zone number
-        self.utm_letter: str | None = None  # UTM zone letter
+        self.utm_letter: str | None = None
+
+        # Set example input for Lightning's ModelSummary (enables FLOP calculation)
+        # self.example_input_array = torch.randn(1, 3, 384, 384)  # UTM zone letter
+        # Example input for model summary
+        self.example_input_array = (
+            torch.randn(1, 3, 384, 384),
+            torch.randn(1, 3, 384, 384),
+        )
 
     def _infer_backbone_dim(self) -> int:
         """Infer the backbone output dimension by running a dummy forward pass.
@@ -163,22 +172,31 @@ class ImageRetrievalModel(L.LightningModule):
         Returns:
             Feature dimension of the encoder output after flattening.
         """
-        # Create a dummy input (1, 3, 224, 224)
-        dummy_input = torch.randn(1, 3, 224, 224)
+        # Save original training state
+        was_training = self.encoder.training
+
+        # Create a dummy input (1, 3, 384, 384)
+        dummy_input = torch.randn(1, 3, 384, 384)
 
         # Run encoder in eval mode
         self.encoder.eval()
         with torch.no_grad():
-            features = self.encoder(dummy_input)
+            street_features = self.encoder.branch1(dummy_input)
+
+        # Restore original training state
+        if was_training:
+            self.encoder.train()
 
         # Flatten and get the dimension
-        if len(features.shape) == 4:  # (B, C, H, W)
-            backbone_dim = features.shape[1] * features.shape[2] * features.shape[3]
-        elif len(features.shape) == 2:  # (B, D)
-            backbone_dim = features.shape[1]
+        if len(street_features.shape) == 4:  # (B, C, H, W)
+            backbone_dim = (
+                street_features.shape[1] * street_features.shape[2] * street_features.shape[3]
+            )
+        elif len(street_features.shape) == 2:  # (B, D)
+            backbone_dim = street_features.shape[1]
         else:
             raise ValueError(
-                f"Unexpected encoder output shape: {features.shape}. "
+                f"Unexpected encoder output shape: {street_features.shape}. "
                 f"Expected (B, D) or (B, C, H, W)"
             )
 
@@ -193,30 +211,6 @@ class ImageRetrievalModel(L.LightningModule):
         img_size: int = 384,
         freeze_encoder: bool = False,
     ) -> "ImageRetrievalModel":
-        """Create ImageRetrievalModel with Sample4Geo encoder (recommended).
-
-        This is a convenience method for creating an ImageRetrievalModel with the
-        Sample4GeoEncoder, which is the recommended default encoder.
-
-        Args:
-            config: ImageRetrievalModelConfig object
-            model_name: Name of the timm model (default: 'resnet50')
-            pretrained: Whether to load pretrained ImageNet weights
-            img_size: Input image size (default: 384)
-            freeze_encoder: If True, freeze encoder weights
-            encoder_weights_path: Optional path to custom encoder weights
-
-        Returns:
-            ImageRetrievalModel instance with Sample4GeoEncoder
-
-        Example:
-            >>> config = ImageRetrievalModelConfig(embedding_dim=512)
-            >>> model = ImageRetrievalModel.from_sample4geo(
-            ...     config=config,
-            ...     model_name="resnet50",
-            ...     encoder_weights_path="path/to/weights.pth"
-            ... )
-        """
         encoder = create_sample4geo_encoder(
             model_name=model_name,
             pretrained=pretrained,
@@ -224,6 +218,26 @@ class ImageRetrievalModel(L.LightningModule):
             freeze=freeze_encoder,
             weights_path=config.weights_path,
         )
+        return cls(encoder=encoder, config=config)
+
+    @classmethod
+    def from_convnext(
+        cls,
+        config: ImageRetrievalModelConfig,
+        model_name: str = "convnext_base_in22k",
+        pretrained: bool = True,
+        img_size: int = 384,
+        freeze: bool = False,
+    ) -> "ImageRetrievalModel":
+        from taco.sensors.cvgl.models.convnext import ConvNeXtEncoder
+
+        encoder = ConvNeXtEncoder(
+            model_name=model_name,
+            pretrained=pretrained,
+            img_size=img_size,
+            freeze=freeze,
+        )
+
         return cls(encoder=encoder, config=config)
 
     @staticmethod
@@ -450,25 +464,16 @@ class ImageRetrievalModel(L.LightningModule):
 
         return model
 
-    def forward(self, images: Tensor) -> Tensor:
-        """Forward pass to compute image embeddings.
-
-        Args:
-            images: Batch of images (B, C, H, W).
-
-        Returns:
-            Normalized embeddings (B, embedding_dim).
-        """
+    def forward(self, img_1: Tensor, img_2: Tensor = None) -> Tensor:
         # Extract features from encoder
-        features = self.encoder(images)
-
+        street_features, reference_features = self.encoder(img_1, img_2)
         # Project to embedding dimension
-        embeddings = self.projection_head(features)
-
+        street_embeddings = self.projection_head(street_features)
+        reference_embeddings = self.projection_head(reference_features)
         # L2 normalize embeddings
-        embeddings = self.l2_norm(embeddings, p=2, dim=1)
-
-        return embeddings
+        street_embeddings = self.l2_norm(street_embeddings, p=2, dim=1)
+        reference_embeddings = self.l2_norm(reference_embeddings, p=2, dim=1)
+        return street_embeddings, reference_embeddings
 
     def compute_triplet_loss(
         self,
@@ -581,8 +586,7 @@ class ImageRetrievalModel(L.LightningModule):
         query_img, reference_img, labels = batch
 
         # Compute embeddings
-        query_emb = self(query_img)  # anchor embeddings (ground view)
-        reference_emb = self(reference_img)  # positive embeddings (satellite view)
+        query_emb, reference_emb = self.forward(query_img, reference_img)
 
         # Compute loss based on loss_type configuration
         if self.config.loss_type == "ntxent":
@@ -683,8 +687,9 @@ class ImageRetrievalModel(L.LightningModule):
         query_img, reference_img, labels = batch
 
         # Compute embeddings
-        query_emb = self(query_img)  # anchor embeddings (ground view)
-        reference_emb = self(reference_img)  # positive embeddings (satellite view)
+        query_emb, reference_emb = self(
+            query_img, reference_img
+        )  # anchor embeddings (ground view) and positive embeddings (satellite view)
 
         # Sample negatives: shift reference embeddings to create mismatched pairs
         negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
@@ -805,6 +810,7 @@ class ImageRetrievalModel(L.LightningModule):
         self,
         image: np.ndarray,
         device: torch.device | None = None,
+        branch: str = "street",
     ) -> np.ndarray:
         """Encode a single image to embedding.
 
@@ -819,22 +825,35 @@ class ImageRetrievalModel(L.LightningModule):
             device = next(self.parameters()).device
 
         # Convert to tensor and normalize
-        img_tensor = torch.from_numpy(image).permute(2, 0, 1).float()
-        img_tensor = img_tensor / 255.0
+        if isinstance(image, np.ndarray):
+            image = torch.from_numpy(image).permute(2, 0, 1).float()
+
+        # Scale to [0, 1]
+        if image.max() > 1.0:
+            image = image / 255.0
 
         # Normalize using ImageNet statistics
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-        img_tensor = (img_tensor - mean) / std
+        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device)
+        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(device)
+        image = (image - mean) / std
 
         # Add batch dimension and move to device
-        img_tensor = img_tensor.unsqueeze(0).to(device)
+        image = image.unsqueeze(0).to(device)
 
         # Forward pass
         self.eval()
-        embedding = self(img_tensor)
 
-        return embedding.cpu().numpy()[0]  # type: ignore[no-any-return]
+        if branch == "street":
+            features = self.encoder.branch1(image)
+        else:
+            features = self.encoder.branch2(image)
+
+        features = self.projection_head(features)
+
+        # L2 normalize embeddings
+        embedding = self.l2_norm(features, p=2, dim=1)
+
+        return embedding.cpu()  # .numpy()[0]  # type: ignore[no-any-return]
 
     @torch.no_grad()  # type: ignore[untyped-decorator]
     def compute_similarity(
@@ -993,8 +1012,8 @@ class ImageRetrievalModel(L.LightningModule):
             # Stack into batch and move to device
             batch_tensor = torch.stack(batch_tensors).to(device)
 
-            # Compute embeddings
-            batch_embeddings = self(batch_tensor)
+            # Compute embeddings (using reference branch, pass same tensor twice)
+            _, batch_embeddings = self(batch_tensor, batch_tensor)
             embeddings_list.append(batch_embeddings.cpu().numpy())
 
         # Concatenate all embeddings
@@ -1356,17 +1375,17 @@ class ImageRetrievalModel(L.LightningModule):
 
 
 def create_convnext_encoder(pretrained: bool = True, freeze: bool = False) -> nn.Module:
-    """Create a ConvNeXt-Tiny encoder for image retrieval.
+    """Create a ConvNeXt-Base encoder for image retrieval.
 
     Args:
         pretrained: Whether to use pretrained ConvNeXt weights
         freeze: If True, freeze encoder weights
 
     Returns:
-        Encoder module that outputs features (B, 768, 1, 1)
+        Encoder module that outputs features (B, 1024, 1, 1)
     """
-    weights = models.ConvNeXt_Tiny_Weights.DEFAULT if pretrained else None
-    convnext = models.convnext_tiny(weights=weights)
+    weights = models.ConvNeXt_Base_Weights.DEFAULT if pretrained else None
+    convnext = models.convnext_base(weights=weights)
 
     # Create encoder from ConvNeXt features and avgpool
     encoder = nn.Sequential(
@@ -1389,29 +1408,9 @@ def create_sample4geo_encoder(
     freeze: bool = False,
     weights_path: str | None = None,
 ) -> nn.Module:
-    """Create a Sample4Geo encoder for image retrieval (recommended default).
+    from taco.sensors.cvgl.models.sample4geo import Sample4GeoEncoder
 
-    This is the recommended encoder for ImageRetrievalModel. It uses the Sample4GeoEncoder
-    from sample4geo/model.py, which wraps timm models with L2 normalization.
-
-    Args:
-        model_name: Name of the timm model. Examples:
-            - 'resnet50', 'resnet101'
-            - 'vit_base_patch16_224', 'vit_large_patch16_224'
-            - 'convnext_base', 'convnext_large'
-            - 'swin_base_patch4_window7_224'
-            - See https://github.com/huggingface/pytorch-image-models for full list
-        pretrained: Whether to load pretrained ImageNet weights from timm
-        img_size: Input image size (especially important for ViT models)
-        freeze: If True, freeze encoder weights
-        weights_path: Optional path to custom trained weights (.pth or .ckpt file).
-            If provided, loads these weights after initialization.
-
-    Returns:
-        Encoder module that outputs normalized features (B, D) where D depends on the model
-    """
-    from taco.sensors.cvgl.sample4geo.model import Sample4GeoEncoder
-
+    # This is the two
     encoder = Sample4GeoEncoder(
         model_name=model_name,
         pretrained=pretrained,
@@ -1457,37 +1456,12 @@ def create_sample4geo_encoder(
         else:
             print(f"✓ Loaded encoder weights from {weights_path}")
 
+    if freeze:
+        encoder.eval()
+    else:
+        encoder.train()
+
     return encoder
-
-
-def create_timm_encoder(
-    model_name: str = "resnet50",
-    pretrained: bool = True,
-    img_size: int = 384,
-    freeze: bool = False,
-) -> nn.Module:
-    """Create a basic timm model encoder for image retrieval.
-
-    Note: For most use cases, use create_sample4geo_encoder() instead, which includes
-    L2 normalization in the encoder.
-
-    Args:
-        model_name: Name of the timm model
-        pretrained: Whether to load pretrained weights
-        img_size: Input image size (especially important for ViT models)
-        freeze: If True, freeze encoder weights
-
-    Returns:
-        Encoder module that outputs features (B, D) where D depends on the model
-    """
-    from taco.sensors.cvgl.sample4geo.model import Sample4GeoEncoder
-
-    return Sample4GeoEncoder(
-        model_name=model_name,
-        pretrained=pretrained,
-        img_size=img_size,
-        freeze=freeze,
-    )
 
 
 if __name__ == "__main__":
@@ -1566,15 +1540,15 @@ if __name__ == "__main__":
     print(f"Embeddings shape: {embeddings.shape}")
 
     print("\n" + "=" * 60)
-    print("Example 4: ConvNeXt-Tiny Encoder (torchvision)")
+    print("Example 4: ConvNeXt-Base Encoder (torchvision)")
     print("=" * 60)
 
     # Using torchvision ConvNeXt instead of timm
     encoder_convnext = create_convnext_encoder(pretrained=True, freeze=False)
 
-    # backbone_dim=768 for ConvNeXt-Tiny (can be inferred automatically if omitted)
-    model_convnext = ImageRetrievalModel(encoder=encoder_convnext, config=config, backbone_dim=768)
-    print("Model created with ConvNeXt-Tiny encoder")
+    # backbone_dim=1024 for ConvNeXt-Base (can be inferred automatically if omitted)
+    model_convnext = ImageRetrievalModel(encoder=encoder_convnext, config=config, backbone_dim=1024)
+    print("Model created with ConvNeXt-Base encoder")
 
     # Test forward pass
     embeddings = model_convnext(dummy_image_224)

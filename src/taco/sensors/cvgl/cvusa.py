@@ -12,7 +12,7 @@ import torch
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
-from taco.utils.image import panorama_horizontal_crop
+from taco.utils.image import gnomonic_projection, panorama_horizontal_crop
 
 
 @dataclass
@@ -44,6 +44,7 @@ class CVUSADatasetConfig:
     """
 
     data_folder: Path = Path("/scratch/datasets/CVUSA/files")
+    dataset: str = "cvusa"
     stage: str = "train"
     mode: str = "triplet"  # Options: "triplet", "query", "reference"
     transforms_query: object | None = None
@@ -78,7 +79,6 @@ class CVUSADataset(Dataset):
 
     def __init__(self, config: CVUSADatasetConfig):
         super().__init__()
-
         self.config = config
 
         assert config.stage in ["train", "val"], "stage must be 'train' or 'val'"
@@ -176,15 +176,25 @@ class CVUSADataset(Dataset):
                 # Use ground truth heading for evaluation
                 heading_deg = gt_heading_deg
 
-            query_img = panorama_horizontal_crop(
-                query_img,
-                heading_deg=heading_deg,
-                fov_deg=self.config.gnomonic_fov_deg,
-                output_shape=self.config.gnomonic_output_shape,
-            )
-        # cv2.imwrite(f"output/{index}_r.jpg", cv2.cvtColor(reference_img, cv2.COLOR_RGB2BGR))
-        # cv2.imwrite(f"output/{index}_q.jpg", cv2.cvtColor(query_img, cv2.COLOR_RGB2BGR))
+            # CVUSA doesn't have the full panos
+            if self.config.dataset == "cvusa":
+                query_img = panorama_horizontal_crop(
+                    query_img,
+                    heading_deg=float(heading_deg),
+                    fov_deg=self.config.gnomonic_fov_deg,
+                    output_shape=self.config.gnomonic_output_shape,
+                )
+            else:
+                query_img = gnomonic_projection(
+                    query_img,
+                    heading_deg=float(heading_deg),
+                    fov_deg=self.config.gnomonic_fov_deg,
+                    output_shape=self.config.gnomonic_output_shape,
+                )
 
+        # cv2.imwrite(f"temp/{index}_r.jpg", cv2.cvtColor(reference_img, cv2.COLOR_RGB2BGR))
+        # cv2.imwrite(f"temp/{index}_q.jpg", cv2.cvtColor(query_img, cv2.COLOR_RGB2BGR))
+        # breakpoint()
         # Flip simultaneously query and reference (only during training)
         if self.config.stage == "train" and np.random.random() < self.config.prob_flip:
             query_img = cv2.flip(query_img, 1)

@@ -28,12 +28,14 @@ from taco.utils.conversions import numpy_pose_to_gtsam, quaternion_to_yaw
 from taco.visualization import plot_trajectory
 
 
-def initialize_cvgl_model(checkpoint_path: Path) -> tuple[ImageRetrievalModel, torch.device]:
+def initialize_cvgl_model(
+    checkpoint_path: Path | None = None,
+) -> tuple[ImageRetrievalModel, torch.device]:
     """Initialize CVGL model and load checkpoint if available."""
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Load trained weights if available
-    if checkpoint_path.exists():
+    if checkpoint_path is not None and checkpoint_path.exists():
         print(f"   Loading CVGL model from {checkpoint_path}")
         # Use the load_from_checkpoint class method (auto-detects encoder)
         cvgl_model = ImageRetrievalModel.load_from_checkpoint(
@@ -51,10 +53,9 @@ def initialize_cvgl_model(checkpoint_path: Path) -> tuple[ImageRetrievalModel, t
             learning_rate=1e-4,
             temperature=0.07,
             loss_type="ntxent",
-            weights_path="weights/sample4geo/cvusa/convnext_base.fb_in22k_ft_in1k_384/weights_e40_98.6830.pth",
+            # weights_path="weights/sample4geo/cvusa/convnext_base.fb_in22k_ft_in1k_384/weights_e40_98.6830.pth",
         )
-        # Create model with Sample4Geo encoder (default recommended)
-        cvgl_model = ImageRetrievalModel.from_sample4geo(
+        cvgl_model = ImageRetrievalModel.from_convnext(
             config=cvgl_config,
             model_name="convnext_base.fb_in22k_ft_in1k_384",
             pretrained=True,
@@ -94,6 +95,9 @@ def handle_cvgl_measurement(
 
     # Get current frame image
     query_img = data.get_colour_img(idx)
+    # View image
+    query_img.show()
+
     query_img_np = np.array(query_img)
     current_yaw = next_pose_gtsam.theta()
 
@@ -157,8 +161,8 @@ def main() -> None:
 
     # Initialize CVGL model
     print("\n2.5. Initialising CVGL localization model...")
-    checkpoint_path = Path("weights/custom/retrieval_final_model.pth")
-    cvgl_model, device = initialize_cvgl_model(checkpoint_path)
+    # checkpoint_path = Path("weights/custom/retrieval_final_model.pth")
+    cvgl_model, device = initialize_cvgl_model()
 
     # Build reference database from graph nodes
     # Load all satellite images from the Kitti graph nodes

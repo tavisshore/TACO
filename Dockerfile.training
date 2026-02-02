@@ -1,0 +1,25 @@
+# Base image with PyTorch and CUDA
+FROM nvcr.io/nvidia/pytorch:24.01-py3
+
+# Set working directory
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir \
+    lightning \
+    wandb \
+    opencv-python-headless \
+    albumentations \
+    timm \
+    tqdm
+
+# Copy project files (optional - can also mount at runtime)
+# COPY . /workspace/
+
+# Default command
+CMD ["/bin/bash"]
