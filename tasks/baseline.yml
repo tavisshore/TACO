@@ -20,7 +20,7 @@ commands:
     --model-name convnext
     --experiment-name auto-batch-multi-gpu-gitclone
     --output-dir output/auto-batch-multi-gpu-gitclone
-    --devices 4
+    --devices 2
     --strategy ddp
 
 # Environment variables
@@ -30,10 +30,4 @@ env:
 
 # Resources
 resources:
-  gpu: 4
-  memory: 60GB
-  disk: 100GB
-
-# Optional ports
-ports:
-  - 6006  # TensorBoard
+  gpu: 2
