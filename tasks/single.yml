@@ -1,5 +1,5 @@
 type: task
-name: baseline-testing
+name: local-baseline
 
 python: "3.11"
 
@@ -10,29 +10,26 @@ commands:
   - apt-get update && apt-get install -y libgl1
   - pip install lightning wandb opencv-python albumentations timm tqdm pykitti pypose pytorch-metric-learning
   - |
-    mkdir -p /dev/shm && mount --types tmpfs --options size=16g tmpfs /dev/shm
     rm -rf TACO
     git clone https://github.com/tavisshore/TACO.git TACO
     cd TACO
     git checkout get_graph_working
     pip install -e .
     python examples/train_cvgl.py \
-      --batch-size 2 \
+      --batch-size 8 \
       --embedding-dim 512 \
       --learning-rate 0.0002 \
       --loss-type ntxent \
       --scheduler-type cosine \
       --max-epochs 40 \
       --model-name convnext \
-      --experiment-name auto-batch-multi-gpu-gitclone \
-      --output-dir output/auto-batch-multi-gpu-gitclone \
-      --devices 4 \
-      --strategy ddp
-
+      --experiment-name baseline \
+      --output-dir output/unman \
+      --devices 1
 env:
   - WANDB_PROJECT=taco
   - WANDB_API_KEY=${WANDB_API_KEY}
   - PYTHONUNBUFFERED=1
 
 resources:
-  gpu: 4
+  gpu: 1
