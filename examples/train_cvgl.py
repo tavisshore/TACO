@@ -1,19 +1,13 @@
 """Example script for training image retrieval model."""
 
-import hashlib
-import pickle
 from pathlib import Path
 
-import cv2
 import lightning as L
 import torch
-import torch.nn.functional as F
-from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.tuner.tuning import Tuner
-from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 from taco.sensors.cvgl import (
     CVUSADataset,
@@ -160,7 +154,7 @@ def main():
         strategy=DDPStrategy(find_unused_parameters=True),
         callbacks=[checkpoint_callback, early_stop, shuffle_callback],
         logger=wandb_logger,
-        check_val_every_n_epoch=1,
+        val_check_interval=1000,  # Validate every 1000 training steps
     )
 
     # Auto batch size tuning if requested
