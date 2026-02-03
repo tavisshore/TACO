@@ -146,3 +146,5 @@ results/
 *.json
 output/
 lightning_logs/
+
+tasks/baseline.yml

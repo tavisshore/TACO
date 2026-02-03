@@ -3,6 +3,9 @@ name: baseline-testing
 
 python: "3.11"
 
+volumes:
+  - /scratch/datasets/CVUSA:/scratch/datasets/CVUSA
+
 commands:
   - apt-get update && apt-get install -y libgl1
   - pip install lightning wandb opencv-python albumentations timm tqdm pykitti pypose pytorch-metric-learning
@@ -28,6 +31,7 @@ commands:
 
 env:
   - WANDB_PROJECT=taco
+  - WANDB_API_KEY=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
   - PYTHONUNBUFFERED=1
 
 resources:
