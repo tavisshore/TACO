@@ -79,7 +79,7 @@ def parse_args():
     parser.add_argument(
         "--model-variant",
         type=str,
-        default="facebook/convnextv2-tiny-22k-384",
+        default="timm/convnextv2_tiny.fcmae_ft_in22k_in1k_384",
         help="Model variant",
     )
     parser.add_argument("--img-size", type=int, default=384, help="Input image size")
