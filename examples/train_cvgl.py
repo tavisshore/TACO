@@ -119,7 +119,7 @@ def main():
     )
 
     # Log hyperparameters to W&B
-    wandb_logger.experiment.config.update(
+    wandb_logger.log_hyperparams(
         {
             "embedding_dim": model_config.embedding_dim,
             "learning_rate": model_config.learning_rate,
@@ -177,7 +177,7 @@ def main():
         print(f"Optimal batch size found: {datamodule.batch_size}")
 
         # Update W&B config with the found batch size
-        wandb_logger.experiment.config.update({"batch_size": datamodule.batch_size})
+        wandb_logger.log_hyperparams({"batch_size": datamodule.batch_size})
     else:
         print(f"Using batch size: {datamodule.batch_size}")
 

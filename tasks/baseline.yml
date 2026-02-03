@@ -17,7 +17,6 @@ commands:
     pip install -e .
     python examples/train_cvgl.py \
       --batch-size 8 \
-      --auto-batch-size \
       --embedding-dim 512 \
       --learning-rate 0.0002 \
       --loss-type ntxent \
@@ -26,7 +25,7 @@ commands:
       --model-name convnext \
       --experiment-name auto-batch-multi-gpu-gitclone \
       --output-dir output/auto-batch-multi-gpu-gitclone \
-      --devices 2 \
+      --devices 4 \
       --strategy ddp
 
 env:
@@ -35,4 +34,4 @@ env:
   - PYTHONUNBUFFERED=1
 
 resources:
-  gpu: 2
+  gpu: 4
