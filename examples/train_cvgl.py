@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch.callbacks import Callback, EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.strategies import DDPStrategy
 from lightning.pytorch.tuner.tuning import Tuner
 from torch.utils.data import DataLoader
 from tqdm import tqdm
@@ -156,10 +157,10 @@ def main():
         max_epochs=args.max_epochs,
         accelerator="auto",
         devices=devices,
-        strategy=args.strategy,
+        strategy=DDPStrategy(find_unused_parameters=True),
         callbacks=[checkpoint_callback, early_stop, shuffle_callback],
         logger=wandb_logger,
-        check_val_every_n_epoch=1,  # Run validation every epoch
+        check_val_every_n_epoch=1,
     )
 
     # Auto batch size tuning if requested

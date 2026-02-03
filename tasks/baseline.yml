@@ -17,7 +17,7 @@ commands:
     git checkout get_graph_working
     pip install -e .
     python examples/train_cvgl.py \
-      --batch-size 8 \
+      --batch-size 4 \
       --embedding-dim 512 \
       --learning-rate 0.0002 \
       --loss-type ntxent \

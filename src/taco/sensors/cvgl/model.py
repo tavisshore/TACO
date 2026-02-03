@@ -592,15 +592,15 @@ class ImageRetrievalModel(L.LightningModule):
         if self.config.loss_type == "ntxent":
             # Use NT-Xent loss only
             loss = self.compute_ntxent_loss(query_emb, reference_emb, labels)
-            self.log("train/ntxent_loss", loss)
-            self.log("train/loss", loss, prog_bar=True)
+            self.log("train/ntxent_loss", loss, sync_dist=True)
+            self.log("train/loss", loss, prog_bar=True, sync_dist=True)
 
         elif self.config.loss_type == "triplet":
             # Use triplet loss only
             negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
             loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
-            self.log("train/triplet_loss", loss)
-            self.log("train/loss", loss, prog_bar=True)
+            self.log("train/triplet_loss", loss, sync_dist=True)
+            self.log("train/loss", loss, prog_bar=True, sync_dist=True)
 
         else:  # self.config.loss_type == "combined"
             # Sample negatives: shift reference embeddings to create mismatched pairs
@@ -618,9 +618,9 @@ class ImageRetrievalModel(L.LightningModule):
             loss = triplet_loss + 0.5 * contrastive_loss
 
             # Log metrics
-            self.log("train/triplet_loss", triplet_loss)
-            self.log("train/contrastive_loss", contrastive_loss)
-            self.log("train/loss", loss, prog_bar=True)
+            self.log("train/triplet_loss", triplet_loss, sync_dist=True)
+            self.log("train/contrastive_loss", contrastive_loss, sync_dist=True)
+            self.log("train/loss", loss, prog_bar=True, sync_dist=True)
 
         return loss
 
@@ -698,14 +698,14 @@ class ImageRetrievalModel(L.LightningModule):
         if self.config.loss_type == "ntxent":
             # Use NT-Xent loss only
             loss = self.compute_ntxent_loss(query_emb, reference_emb, labels)
-            self.log("val/ntxent_loss", loss)
-            self.log("val/loss", loss, prog_bar=True)
+            self.log("val/ntxent_loss", loss, sync_dist=True)
+            self.log("val/loss", loss, prog_bar=True, sync_dist=True)
 
         elif self.config.loss_type == "triplet":
             # Use triplet loss only
             loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
-            self.log("val/triplet_loss", loss)
-            self.log("val/loss", loss, prog_bar=True)
+            self.log("val/triplet_loss", loss, sync_dist=True)
+            self.log("val/loss", loss, prog_bar=True, sync_dist=True)
 
         else:  # self.config.loss_type == "combined"
             # Compute triplet loss
@@ -718,9 +718,9 @@ class ImageRetrievalModel(L.LightningModule):
             loss = triplet_loss + 0.5 * contrastive_loss
 
             # Log metrics
-            self.log("val/triplet_loss", triplet_loss)
-            self.log("val/contrastive_loss", contrastive_loss)
-            self.log("val/loss", loss, prog_bar=True)
+            self.log("val/triplet_loss", triplet_loss, sync_dist=True)
+            self.log("val/contrastive_loss", contrastive_loss, sync_dist=True)
+            self.log("val/loss", loss, prog_bar=True, sync_dist=True)
 
         # Compute metrics (independent of loss type)
         pos_distance = F.pairwise_distance(query_emb, reference_emb, p=2)
@@ -731,14 +731,14 @@ class ImageRetrievalModel(L.LightningModule):
         recall_at_k = self.compute_recall_at_k(query_emb, reference_emb, k_values=(1, 5, 10))
 
         # Log metrics
-        self.log("val/accuracy", accuracy)
-        self.log("val/pos_distance", pos_distance.mean())
-        self.log("val/neg_distance", neg_distance.mean())
+        self.log("val/accuracy", accuracy, sync_dist=True)
+        self.log("val/pos_distance", pos_distance.mean(), sync_dist=True)
+        self.log("val/neg_distance", neg_distance.mean(), sync_dist=True)
 
         # Log recall@K metrics as percentages in progress bar
-        self.log("val@1", recall_at_k[1] * 100, prog_bar=True)
-        self.log("val@5", recall_at_k[5] * 100, prog_bar=True)
-        self.log("val@10", recall_at_k[10] * 100, prog_bar=True)
+        self.log("val@1", recall_at_k[1] * 100, prog_bar=True, sync_dist=True)
+        self.log("val@5", recall_at_k[5] * 100, prog_bar=True, sync_dist=True)
+        self.log("val@10", recall_at_k[10] * 100, prog_bar=True, sync_dist=True)
 
         return loss
 

@@ -110,7 +110,10 @@ def parse_args():
         "--experiment-name", type=str, default="initial", help="Experiment name for W&B"
     )
     parser.add_argument(
-        "--output-dir", type=str, default="output", help="Output directory for checkpoints and logs"
+        "--output-dir",
+        type=str,
+        default="/scratch/datasets/CVUSA/output",
+        help="Output directory for checkpoints and logs",
     )
 
     return parser.parse_args()
