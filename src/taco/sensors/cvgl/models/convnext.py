@@ -8,7 +8,7 @@ class ConvNeXtEncoder(pl.LightningModule):
     def __init__(
         self,
         pretrained=True,
-        model_name="convnextv2_base.fcmae_ft_in22k_in1k_384",
+        model_name="facebook/convnextv2-tiny-22k-384",
         img_size=384,
         freeze=False,
         lr=1e-4,

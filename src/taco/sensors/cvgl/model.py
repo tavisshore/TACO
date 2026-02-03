@@ -1,41 +1,3 @@
-"""PyTorch Lightning model for image retrieval with flexible encoder support.
-
-This module provides ImageRetrievalModel, a flexible image retrieval model that accepts
-any encoder architecture for visual place recognition tasks.
-
-Quick Start (Recommended):
-    >>> from taco.sensors.cvgl import ImageRetrievalModel, ImageRetrievalModelConfig
-    >>>
-    >>> # Create config
-    >>> config = ImageRetrievalModelConfig(embedding_dim=512, loss_type="ntxent")
-    >>>
-    >>> # Method 1: Use Sample4Geo encoder (recommended default)
-    >>> model = ImageRetrievalModel.from_sample4geo(
-    ...     config=config,
-    ...     model_name="resnet50",
-    ...     img_size=384,
-    ... )
-    >>>
-    >>> # Method 2: Load pre-trained weights
-    >>> model = ImageRetrievalModel.from_sample4geo(
-    ...     config=config,
-    ...     model_name="resnet50",
-    ...     encoder_weights_path="path/to/encoder.pth",
-    ... )
-    >>>
-    >>> # Method 3: Load full checkpoint
-    >>> model = ImageRetrievalModel.load_from_checkpoint(
-    ...     checkpoint_path="path/to/model.ckpt",
-    ...     model_name="resnet50",
-    ... )
-
-Advanced Usage:
-    For custom encoders, use the ImageRetrievalModel constructor directly:
-    >>> from taco.sensors.cvgl import create_sample4geo_encoder
-    >>> encoder = create_sample4geo_encoder("vit_base_patch16_224", img_size=224)
-    >>> model = ImageRetrievalModel(encoder=encoder, config=config)
-"""
-
 from dataclasses import dataclass
 from typing import Any, Literal, Tuple
 
@@ -224,7 +186,7 @@ class ImageRetrievalModel(L.LightningModule):
     def from_convnext(
         cls,
         config: ImageRetrievalModelConfig,
-        model_name: str = "convnext_base_in22k",
+        model_name: str = "facebook/convnextv2-tiny-22k-384",
         pretrained: bool = True,
         img_size: int = 384,
         freeze: bool = False,

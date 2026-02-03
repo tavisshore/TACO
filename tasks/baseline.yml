@@ -7,6 +7,7 @@ volumes:
   - /scratch/datasets/CVUSA:/scratch/datasets/CVUSA
 
 commands:
+  - echo "CONTAINER STARTED"
   - apt-get update && apt-get install -y libgl1
   - pip install lightning wandb opencv-python albumentations timm tqdm pykitti pypose pytorch-metric-learning
   - |

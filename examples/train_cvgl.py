@@ -70,7 +70,7 @@ def main():
     elif args.model_name == "convnext":
         model = ImageRetrievalModel.from_convnext(
             config=model_config,
-            model_name=args.convnext_variant,
+            model_name=args.model_variant,
             pretrained=True,
             img_size=args.img_size,
             freeze=args.freeze_encoder,

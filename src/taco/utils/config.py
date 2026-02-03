@@ -77,10 +77,10 @@ def parse_args():
         help="Model architecture to use",
     )
     parser.add_argument(
-        "--convnext-variant",
+        "--model-variant",
         type=str,
-        default="convnextv2_base.fcmae_ft_in22k_in1k_384",
-        help="ConvNext model variant",
+        default="facebook/convnextv2-tiny-22k-384",
+        help="Model variant",
     )
     parser.add_argument("--img-size", type=int, default=384, help="Input image size")
     parser.add_argument("--freeze-encoder", action="store_true", help="Freeze encoder weights")
