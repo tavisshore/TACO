@@ -154,7 +154,7 @@ def main():
         strategy=DDPStrategy(find_unused_parameters=True),
         callbacks=[checkpoint_callback, early_stop, shuffle_callback],
         logger=wandb_logger,
-        val_check_interval=1000,  # Validate every 1000 training steps
+        # val_check_interval=1000,  # Validate every 1000 training steps
     )
 
     # Auto batch size tuning if requested
