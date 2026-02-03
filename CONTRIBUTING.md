@@ -1,5 +1,4 @@
 # Contributing to TACO
-
 Thank you for considering contributing to TACO! This document provides guidelines and instructions for contributing.
 
 ## Development Setup

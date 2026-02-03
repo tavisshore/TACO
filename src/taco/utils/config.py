@@ -9,7 +9,7 @@ def parse_args():
     parser.add_argument(
         "--data-folder",
         type=str,
-        default="/scratch/datasets/CVUSA/files",
+        default="/scratch/datasets/CVUSA",
         help="Path to dataset folder",
     )
 

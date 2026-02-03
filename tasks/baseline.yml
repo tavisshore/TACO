@@ -1,33 +1,34 @@
 type: task
-name: train-cvgl-auto-batch-multi-gpu-gitclone
+name: baseline-testing
 
 python: "3.11"
 
-# Commands to run
 commands:
-  - git clone https://github.com/tavisshore/TACO.git .
-  - git checkout get_graph_working
-  - pip install -e .
-  - pip install lightning wandb opencv-python albumentations timm tqdm
-  - python examples/train_cvgl.py
-    --batch-size 8
-    --auto-batch-size
-    --embedding-dim 512
-    --learning-rate 0.0002
-    --loss-type ntxent
-    --scheduler-type cosine
-    --max-epochs 40
-    --model-name convnext
-    --experiment-name auto-batch-multi-gpu-gitclone
-    --output-dir output/auto-batch-multi-gpu-gitclone
-    --devices 2
-    --strategy ddp
+  - apt-get update && apt-get install -y libgl1
+  - pip install lightning wandb opencv-python albumentations timm tqdm pykitti pypose pytorch-metric-learning
+  - |
+    rm -rf TACO
+    git clone https://github.com/tavisshore/TACO.git TACO
+    cd TACO
+    git checkout get_graph_working
+    pip install -e .
+    python examples/train_cvgl.py \
+      --batch-size 8 \
+      --auto-batch-size \
+      --embedding-dim 512 \
+      --learning-rate 0.0002 \
+      --loss-type ntxent \
+      --scheduler-type cosine \
+      --max-epochs 40 \
+      --model-name convnext \
+      --experiment-name auto-batch-multi-gpu-gitclone \
+      --output-dir output/auto-batch-multi-gpu-gitclone \
+      --devices 2 \
+      --strategy ddp
 
-# Environment variables
 env:
   - WANDB_PROJECT=taco
   - PYTHONUNBUFFERED=1
 
-# Resources
 resources:
   gpu: 2
