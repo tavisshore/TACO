@@ -26,7 +26,7 @@ def parse_args():
         help="Automatically find maximum batch size that fits in GPU memory",
     )
     parser.add_argument("--max-epochs", type=int, default=40, help="Maximum number of epochs")
-    parser.add_argument("--num-workers", type=int, default=4, help="Number of data loader workers")
+    parser.add_argument("--num-workers", type=int, default=0, help="Number of data loader workers")
 
     # Multi-GPU configuration
     parser.add_argument(

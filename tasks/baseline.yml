@@ -10,6 +10,7 @@ commands:
   - apt-get update && apt-get install -y libgl1
   - pip install lightning wandb opencv-python albumentations timm tqdm pykitti pypose pytorch-metric-learning
   - |
+    mkdir -p /dev/shm && mount --types tmpfs --options size=16g tmpfs /dev/shm
     rm -rf TACO
     git clone https://github.com/tavisshore/TACO.git TACO
     cd TACO
