@@ -394,6 +394,10 @@ class ImageRetrievalModel(L.LightningModule):
         loss = self.ntxent_loss(embeddings, labels_combined)
         return loss
 
+    def on_train_epoch_start(self) -> None:
+        self.train_query_embs: list[Tensor] = []
+        self.train_reference_embs: list[Tensor] = []
+
     def training_step(
         self,
         batch: Tuple[Tensor, Tensor, Tensor],
@@ -435,7 +439,31 @@ class ImageRetrievalModel(L.LightningModule):
             self.log("train/contrastive_loss", contrastive_loss, sync_dist=True)
             self.log("train/loss", loss, prog_bar=True, sync_dist=True)
 
+        # Accumulate embeddings for epoch-end metrics
+        self.train_query_embs.append(query_emb.detach())
+        self.train_reference_embs.append(reference_emb.detach())
+
         return loss
+
+    def on_train_epoch_end(self) -> None:
+        query_emb = torch.cat(self.train_query_embs, dim=0)
+        reference_emb = torch.cat(self.train_reference_embs, dim=0)
+
+        # Compute distances over the full training epoch
+        pos_distance = F.pairwise_distance(query_emb, reference_emb, p=2)
+        negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
+        neg_distance = F.pairwise_distance(query_emb, negative_emb, p=2)
+        accuracy = (pos_distance < neg_distance).float().mean()
+
+        # Compute Top-K recall over the full epoch
+        recall_at_k = self.compute_recall_at_k(query_emb, reference_emb, k_values=(1, 5, 10))
+
+        self.log("train/accuracy", accuracy, sync_dist=True)
+        self.log("train/pos_distance", pos_distance.mean(), sync_dist=True)
+        self.log("train/neg_distance", neg_distance.mean(), sync_dist=True)
+        self.log("train@1", recall_at_k[1] * 100, prog_bar=True, sync_dist=True)
+        self.log("train@5", recall_at_k[5] * 100, prog_bar=True, sync_dist=True)
+        self.log("train@10", recall_at_k[10] * 100, prog_bar=True, sync_dist=True)
 
     def compute_recall_at_k(
         self,
@@ -482,6 +510,10 @@ class ImageRetrievalModel(L.LightningModule):
             recall_at_k[k] = matches.mean().item()
 
         return recall_at_k
+
+    def on_validation_epoch_start(self) -> None:
+        self.val_query_embs: list[Tensor] = []
+        self.val_reference_embs: list[Tensor] = []
 
     def validation_step(
         self,
@@ -535,25 +567,31 @@ class ImageRetrievalModel(L.LightningModule):
             self.log("val/contrastive_loss", contrastive_loss, sync_dist=True)
             self.log("val/loss", loss, prog_bar=True, sync_dist=True)
 
-        # Compute metrics (independent of loss type)
+        # Accumulate embeddings for epoch-end metrics
+        self.val_query_embs.append(query_emb.detach())
+        self.val_reference_embs.append(reference_emb.detach())
+
+        return loss
+
+    def on_validation_epoch_end(self) -> None:
+        query_emb = torch.cat(self.val_query_embs, dim=0)
+        reference_emb = torch.cat(self.val_reference_embs, dim=0)
+
+        # Compute distances over the full validation set
         pos_distance = F.pairwise_distance(query_emb, reference_emb, p=2)
+        negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
         neg_distance = F.pairwise_distance(query_emb, negative_emb, p=2)
         accuracy = (pos_distance < neg_distance).float().mean()
 
-        # Compute Top-K recall metrics
+        # Compute Top-K recall over the full gallery
         recall_at_k = self.compute_recall_at_k(query_emb, reference_emb, k_values=(1, 5, 10))
 
-        # Log metrics
         self.log("val/accuracy", accuracy, sync_dist=True)
         self.log("val/pos_distance", pos_distance.mean(), sync_dist=True)
         self.log("val/neg_distance", neg_distance.mean(), sync_dist=True)
-
-        # Log recall@K metrics as percentages in progress bar
         self.log("val@1", recall_at_k[1] * 100, prog_bar=True, sync_dist=True)
         self.log("val@5", recall_at_k[5] * 100, prog_bar=True, sync_dist=True)
         self.log("val@10", recall_at_k[10] * 100, prog_bar=True, sync_dist=True)
-
-        return loss
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Configure optimizers and learning rate schedulers.
