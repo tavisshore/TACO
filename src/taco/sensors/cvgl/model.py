@@ -439,9 +439,9 @@ class ImageRetrievalModel(L.LightningModule):
             self.log("train/contrastive_loss", contrastive_loss, sync_dist=True)
             self.log("train/loss", loss, prog_bar=True, sync_dist=True)
 
-        # Accumulate embeddings for epoch-end metrics
-        self.train_query_embs.append(query_emb.detach())
-        self.train_reference_embs.append(reference_emb.detach())
+        # Accumulate embeddings on CPU for epoch-end metrics
+        self.train_query_embs.append(query_emb.detach().cpu())
+        self.train_reference_embs.append(reference_emb.detach().cpu())
 
         return loss
 
@@ -458,12 +458,28 @@ class ImageRetrievalModel(L.LightningModule):
         # Compute Top-K recall over the full epoch
         recall_at_k = self.compute_recall_at_k(query_emb, reference_emb, k_values=(1, 5, 10))
 
-        self.log("train/accuracy", accuracy, sync_dist=True)
-        self.log("train/pos_distance", pos_distance.mean(), sync_dist=True)
-        self.log("train/neg_distance", neg_distance.mean(), sync_dist=True)
-        self.log("train@1", recall_at_k[1] * 100, prog_bar=True, sync_dist=True)
-        self.log("train@5", recall_at_k[5] * 100, prog_bar=True, sync_dist=True)
-        self.log("train@10", recall_at_k[10] * 100, prog_bar=True, sync_dist=True)
+        # Move scalars to model device — NCCL all_reduce (sync_dist) requires CUDA tensors
+        self.log("train/accuracy", accuracy.to(self.device), sync_dist=True)
+        self.log("train/pos_distance", pos_distance.mean().to(self.device), sync_dist=True)
+        self.log("train/neg_distance", neg_distance.mean().to(self.device), sync_dist=True)
+        self.log(
+            "train@1",
+            torch.tensor(recall_at_k[1] * 100, device=self.device),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            "train@5",
+            torch.tensor(recall_at_k[5] * 100, device=self.device),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            "train@10",
+            torch.tensor(recall_at_k[10] * 100, device=self.device),
+            prog_bar=True,
+            sync_dist=True,
+        )
 
     def compute_recall_at_k(
         self,
@@ -485,28 +501,24 @@ class ImageRetrievalModel(L.LightningModule):
             Dictionary mapping K to recall@K as a fraction in [0, 1].
         """
         batch_size = query_emb.size(0)
+        max_k = max(k_values)
+        chunk_size = 512
 
-        # Compute similarity matrix: (B, B)
-        # Each row i contains similarities between query i and all references
-        similarity_matrix = torch.matmul(query_emb, reference_emb.T)
+        # Process in chunks to avoid materializing the full (B, B) similarity matrix.
+        # Each chunk computes only (chunk_size, B) similarities and immediately
+        # extracts the top-K indices, keeping peak memory at O(chunk_size * B).
+        top_k_indices_list: list[Tensor] = []
+        for i in range(0, batch_size, chunk_size):
+            sim_chunk = torch.matmul(query_emb[i : i + chunk_size], reference_emb.T)
+            _, chunk_top_k = torch.topk(sim_chunk, k=max_k, dim=1)
+            top_k_indices_list.append(chunk_top_k)
+        top_k_indices = torch.cat(top_k_indices_list, dim=0)  # (B, max_k)
 
-        # For each query (row), rank references by similarity (descending)
-        # Get indices of references sorted by similarity
-        _, sorted_indices = torch.sort(similarity_matrix, dim=1, descending=True)
-
-        # Ground truth: correct match for query i is reference i
         correct_indices = torch.arange(batch_size, device=query_emb.device).unsqueeze(1)
 
-        # Compute recall@K for each K value
         recall_at_k = {}
         for k in k_values:
-            # Get top-K predictions for each query
-            top_k_indices = sorted_indices[:, :k]
-
-            # Check if correct index is in top-K for each query
-            matches = (top_k_indices == correct_indices).any(dim=1).float()
-
-            # Recall@K is the fraction of queries where correct match is in top-K
+            matches = (top_k_indices[:, :k] == correct_indices).any(dim=1).float()
             recall_at_k[k] = matches.mean().item()
 
         return recall_at_k
@@ -567,9 +579,9 @@ class ImageRetrievalModel(L.LightningModule):
             self.log("val/contrastive_loss", contrastive_loss, sync_dist=True)
             self.log("val/loss", loss, prog_bar=True, sync_dist=True)
 
-        # Accumulate embeddings for epoch-end metrics
-        self.val_query_embs.append(query_emb.detach())
-        self.val_reference_embs.append(reference_emb.detach())
+        # Accumulate embeddings on CPU for epoch-end metrics
+        self.val_query_embs.append(query_emb.detach().cpu())
+        self.val_reference_embs.append(reference_emb.detach().cpu())
 
         return loss
 
@@ -586,12 +598,28 @@ class ImageRetrievalModel(L.LightningModule):
         # Compute Top-K recall over the full gallery
         recall_at_k = self.compute_recall_at_k(query_emb, reference_emb, k_values=(1, 5, 10))
 
-        self.log("val/accuracy", accuracy, sync_dist=True)
-        self.log("val/pos_distance", pos_distance.mean(), sync_dist=True)
-        self.log("val/neg_distance", neg_distance.mean(), sync_dist=True)
-        self.log("val@1", recall_at_k[1] * 100, prog_bar=True, sync_dist=True)
-        self.log("val@5", recall_at_k[5] * 100, prog_bar=True, sync_dist=True)
-        self.log("val@10", recall_at_k[10] * 100, prog_bar=True, sync_dist=True)
+        # Move scalars to model device — NCCL all_reduce (sync_dist) requires CUDA tensors
+        self.log("val/accuracy", accuracy.to(self.device), sync_dist=True)
+        self.log("val/pos_distance", pos_distance.mean().to(self.device), sync_dist=True)
+        self.log("val/neg_distance", neg_distance.mean().to(self.device), sync_dist=True)
+        self.log(
+            "val@1",
+            torch.tensor(recall_at_k[1] * 100, device=self.device),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val@5",
+            torch.tensor(recall_at_k[5] * 100, device=self.device),
+            prog_bar=True,
+            sync_dist=True,
+        )
+        self.log(
+            "val@10",
+            torch.tensor(recall_at_k[10] * 100, device=self.device),
+            prog_bar=True,
+            sync_dist=True,
+        )
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Configure optimizers and learning rate schedulers.
