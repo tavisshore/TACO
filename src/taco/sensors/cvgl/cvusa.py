@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
-import cv2
 import numpy as np
 import pandas as pd
 import torch
+from PIL import Image
 from torch.utils.data import Dataset
 from tqdm import tqdm
 
@@ -147,12 +147,10 @@ class CVUSADataset(Dataset):
         idx, sat, ground = self.idx2pair[self.samples[index]]
 
         # load query -> ground image (equirectangular panorama)
-        query_img = cv2.imread(f"{self.config.data_folder}/{ground}")
-        query_img = cv2.cvtColor(query_img, cv2.COLOR_BGR2RGB)
+        query_img = Image.open(f"{self.config.data_folder}/{ground}").convert("RGB")
 
         # load reference -> satellite image
-        reference_img = cv2.imread(f"{self.config.data_folder}/{sat}")
-        reference_img = cv2.cvtColor(reference_img, cv2.COLOR_BGR2RGB)
+        reference_img = Image.open(f"{self.config.data_folder}/{sat}").convert("RGB")
 
         # Get the ground truth heading from the metadata
         gt_heading_deg = (
@@ -167,13 +165,10 @@ class CVUSADataset(Dataset):
 
         # Apply horizontal crop from panorama
         if self.config.use_gnomonic_projection:
-            # Sample random heading (vehicle direction) if enabled (training augmentation)
             if self.config.random_heading and self.config.stage == "train":
-                # Add random offset to the ground truth heading for augmentation
                 heading_offset = np.random.uniform(-180.0, 180.0)
                 heading_deg = (gt_heading_deg + heading_offset) % 360.0
             else:
-                # Use ground truth heading for evaluation
                 heading_deg = gt_heading_deg
 
             # CVUSA doesn't have the full panos
@@ -192,63 +187,50 @@ class CVUSADataset(Dataset):
                     output_shape=self.config.gnomonic_output_shape,
                 )
 
-        # cv2.imwrite(f"temp/{index}_r.jpg", cv2.cvtColor(reference_img, cv2.COLOR_RGB2BGR))
-        # cv2.imwrite(f"temp/{index}_q.jpg", cv2.cvtColor(query_img, cv2.COLOR_RGB2BGR))
-        # breakpoint()
         # Flip simultaneously query and reference (only during training)
         if self.config.stage == "train" and np.random.random() < self.config.prob_flip:
-            query_img = cv2.flip(query_img, 1)
-            reference_img = cv2.flip(reference_img, 1)
-
-        # image transforms
-        if self.config.transforms_query is not None:
-            query_img = self.config.transforms_query(image=query_img)["image"]
-
-        if self.config.transforms_reference is not None:
-            reference_img = self.config.transforms_reference(image=reference_img)["image"]
+            query_img = query_img.transpose(Image.FLIP_LEFT_RIGHT)
+            reference_img = reference_img.transpose(Image.FLIP_LEFT_RIGHT)
 
         # Rotate simultaneously query and reference (only during training)
         if self.config.stage == "train" and np.random.random() < self.config.prob_rotate:
             r = np.random.choice([1, 2, 3])
+            rot_method = [Image.ROTATE_90, Image.ROTATE_180, Image.ROTATE_270][r - 1]
+            reference_img = reference_img.transpose(rot_method)
 
-            # rotate sat img 90 or 180 or 270
-            reference_img = torch.rot90(reference_img, k=r, dims=(1, 2))
-
-            # use roll for ground view if rotate sat view
-            # Note: If gnomonic projection is used, the query_img is already a perspective crop
-            # so rolling might not make sense. Consider adjusting heading instead during projection.
             if not self.config.use_gnomonic_projection:
-                w = query_img.shape[2]
-                shifts = -w // 4 * r
-                query_img = torch.roll(query_img, shifts=shifts, dims=2)
+                w = query_img.size[0]
+                shifts = (-w // 4 * r) % w
+                query_img = Image.fromarray(np.roll(np.array(query_img), shifts, axis=1))
 
         label = torch.tensor(idx, dtype=torch.long)
 
-        # Convert to tensor and permute from (H, W, C) to (C, H, W)
-        query_img = torch.tensor(query_img, dtype=torch.float32).permute(2, 0, 1)
-        reference_img = torch.tensor(reference_img, dtype=torch.float32).permute(2, 0, 1)
+        # image transforms (timm pipeline handles PIL -> tensor + normalize)
+        if self.config.transforms_query is not None:
+            query_img = self.config.transforms_query(query_img)
+        else:
+            query_img = (
+                torch.tensor(np.array(query_img), dtype=torch.float32).permute(2, 0, 1) / 255.0
+            )
 
-        # Resize to network input size
-        query_img = torch.nn.functional.interpolate(
-            query_img.unsqueeze(0),
-            size=self.config.network_input_size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
-
-        reference_img = torch.nn.functional.interpolate(
-            reference_img.unsqueeze(0),
-            size=self.config.network_input_size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
-
+        if self.config.transforms_reference is not None:
+            reference_img = self.config.transforms_reference(reference_img)
+        else:
+            reference_img = (
+                torch.tensor(np.array(reference_img), dtype=torch.float32).permute(2, 0, 1) / 255.0
+            )
+            # Resize to network input size
+            reference_img = torch.nn.functional.interpolate(
+                reference_img.unsqueeze(0),
+                size=self.config.network_input_size,
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
         return query_img, reference_img, label
 
     def _get_single_image(self, index):
         """Get single image for evaluation: (image, label)."""
-        img = cv2.imread(f"{self.config.data_folder}/{self.images[index]}")
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = Image.open(f"{self.config.data_folder}/{self.images[index]}").convert("RGB")
 
         # Get the index/label for this image
         idx = self.label[index]
@@ -272,25 +254,22 @@ class CVUSADataset(Dataset):
                 img, gt_heading_deg, crop_to_fit=self.config.crop_rotated_reference
             )
 
-        # image transforms
+        # image transforms (timm pipeline handles PIL -> tensor + normalize)
         if self.config.mode == "query" and self.config.transforms_query is not None:
-            img = self.config.transforms_query(image=img)["image"]
+            img = self.config.transforms_query(img)
         elif self.config.mode == "reference" and self.config.transforms_reference is not None:
-            img = self.config.transforms_reference(image=img)["image"]
+            img = self.config.transforms_reference(img)
+        else:
+            img = torch.tensor(np.array(img), dtype=torch.float32).permute(2, 0, 1) / 255.0
+            # Resize to network input size
+            img = torch.nn.functional.interpolate(
+                img.unsqueeze(0),
+                size=self.config.network_input_size,
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
 
         label = torch.tensor(idx, dtype=torch.long)
-
-        # Convert to tensor and permute from (H, W, C) to (C, H, W) if numpy array
-        if isinstance(img, np.ndarray):
-            img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)
-
-        # Resize to network input size
-        img = torch.nn.functional.interpolate(
-            img.unsqueeze(0),
-            size=self.config.network_input_size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
 
         return img, label
 
@@ -299,22 +278,18 @@ class CVUSADataset(Dataset):
         Rotate image by heading angle (clockwise) with options to handle black padding.
 
         Args:
-            img: Input image (H, W, C) as numpy array
+            img: Input PIL Image
             heading_deg: Rotation angle in degrees (0-360, clockwise from North)
             crop_to_fit: If True, crops to largest rectangle that fits without black padding
 
         Returns:
-            Rotated image (cropped if crop_to_fit=True, otherwise same dimensions)
+            Rotated PIL Image (cropped if crop_to_fit=True, otherwise same dimensions)
         """
-        h, w = img.shape[:2]
-        center = (w // 2, h // 2)
+        w, h = img.size
         heading_deg += 180.0  # Adjust heading to match image rotation direction
 
-        # Create rotation matrix (negative for clockwise rotation in image coordinates)
-        rotation_matrix = cv2.getRotationMatrix2D(center, heading_deg, 1.0)
-
-        # Rotate the image
-        rotated_img = cv2.warpAffine(img, rotation_matrix, (w, h), flags=cv2.INTER_LINEAR)
+        # PIL rotate is counter-clockwise, same sign convention as cv2.getRotationMatrix2D
+        rotated_img = img.rotate(heading_deg, resample=Image.BILINEAR, fillcolor=(0, 0, 0))
 
         if crop_to_fit:
             # Calculate the largest rectangle that fits inside the rotated image
@@ -322,8 +297,6 @@ class CVUSADataset(Dataset):
             angle_rad = np.abs(np.radians(heading_deg % 90))
 
             if angle_rad != 0:
-                # Calculate the dimensions of the largest axis-aligned rectangle
-                # that fits inside the rotated image
                 sin_a = np.sin(angle_rad)
                 cos_a = np.cos(angle_rad)
 
@@ -338,7 +311,7 @@ class CVUSADataset(Dataset):
                 # Crop to center
                 x_start = (w - new_w) // 2
                 y_start = (h - new_h) // 2
-                rotated_img = rotated_img[y_start : y_start + new_h, x_start : x_start + new_w]
+                rotated_img = rotated_img.crop((x_start, y_start, x_start + new_w, y_start + new_h))
 
         return rotated_img
 

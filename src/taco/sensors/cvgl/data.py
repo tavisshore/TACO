@@ -4,15 +4,15 @@ import hashlib
 import pickle
 from pathlib import Path
 
-import cv2
 import lightning as L
 import torch
 import torch.nn.functional as F
 from lightning.pytorch.callbacks import Callback
+from PIL import Image
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from taco.sensors.cvgl import CVUSADataset
+from taco.sensors.cvgl import CVUSADataset, KITTIValDataset
 from taco.utils.config import parse_args
 
 
@@ -22,21 +22,23 @@ class CVGLDataModule(L.LightningDataModule):
     def __init__(
         self,
         train_dataset: CVUSADataset,
-        val_dataset: CVUSADataset,
+        val_dataset: CVUSADataset | KITTIValDataset,
         batch_size: int = 8,
         num_workers: int = 4,
+        shuffle: bool = False,
     ):
         super().__init__()
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.batch_size = batch_size
         self.num_workers = num_workers
+        self.shuffle = shuffle
 
     def train_dataloader(self):
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
-            shuffle=False,  # DatasetShuffleCallback handles custom shuffling
+            shuffle=self.shuffle,
             num_workers=self.num_workers,
             pin_memory=True,
         )
@@ -44,7 +46,7 @@ class CVGLDataModule(L.LightningDataModule):
     def val_dataloader(self):
         return DataLoader(
             self.val_dataset,
-            batch_size=self.batch_size,
+            batch_size=1,
             shuffle=False,
             num_workers=self.num_workers,
             pin_memory=True,
@@ -172,7 +174,9 @@ class DatasetShuffleCallback(Callback):
         # First epoch or when similarity dict needs update
         if trainer.current_epoch == 0 or trainer.current_epoch % self.update_frequency == 0:
             print(f"\nEpoch {trainer.current_epoch}: Computing similarity dictionary...")
-            self.sim_dict = self._compute_similarity_dict(pl_module)
+            sim_dict = self._compute_similarity_dict(trainer, pl_module)
+            if sim_dict is not None:
+                self.sim_dict = sim_dict
 
         # Shuffle dataset with similarity dictionary
         self.train_dataset.shuffle(
@@ -182,7 +186,7 @@ class DatasetShuffleCallback(Callback):
         )
 
     @torch.no_grad()
-    def _compute_similarity_dict(self, pl_module) -> dict:
+    def _compute_similarity_dict(self, trainer: L.Trainer, pl_module) -> dict | None:
         """Compute similarity dictionary for all training samples.
 
         Args:
@@ -197,31 +201,40 @@ class DatasetShuffleCallback(Callback):
         # Get all training indices
         train_ids = self.train_dataset.train_ids
 
-        # Try to load embeddings from cache
         cache_key = self._get_cache_key(pl_module)
-        embeddings = self._load_embeddings_cache(cache_key)
 
-        if embeddings is None:
-            # Compute embeddings for all training samples (using satellite/reference images)
+        if trainer.current_epoch == 0:
+            # Before training: only load from cache (no model to encode with yet)
+            embeddings = self._load_embeddings_cache(cache_key)
+            if embeddings is None:
+                return None
+        else:
+            # After training: recompute (model weights have changed)
             print("Computing embeddings for training samples...")
+            encode_batch_size = 64
+            data_folder = self.train_dataset.config.data_folder
             embeddings = []
 
-            for idx in tqdm(train_ids, desc="Encoding images"):
-                # Load satellite image for this sample
-                sat_path = self.train_dataset.idx2sat[idx]
-                img = self._load_and_preprocess_image(
-                    f"{self.train_dataset.config.data_folder}/{sat_path}"
-                )
-                img = img.to(device)
+            for batch_start in tqdm(
+                range(0, len(train_ids), encode_batch_size), desc="Encoding images"
+            ):
+                batch_ids = train_ids[batch_start : batch_start + encode_batch_size]
 
-                # Get embedding
-                emb = pl_module.encode_image(img, branch="satellite")
+                batch_imgs = []
+                for idx in batch_ids:
+                    sat_path = self.train_dataset.idx2sat[idx]
+                    img = self._load_and_preprocess_image(f"{data_folder}/{sat_path}")
+                    batch_imgs.append(img)
+
+                batch_tensor = torch.stack(batch_imgs).to(device)
+
+                features = pl_module.encoder.branch2(batch_tensor)
+                features = pl_module.projection_head(features)
+                emb = pl_module.l2_norm(features, p=2, dim=1)
+
                 embeddings.append(emb.cpu())
 
-            # Stack all embeddings (N, embedding_dim)
             embeddings = torch.cat(embeddings, dim=0)
-
-            # Save to cache
             self._save_embeddings_cache(embeddings, cache_key)
 
         # Compute pairwise cosine similarities in batches to avoid OOM
@@ -253,19 +266,18 @@ class DatasetShuffleCallback(Callback):
         return sim_dict
 
     def _load_and_preprocess_image(self, image_path: str) -> torch.Tensor:
-        img = cv2.imread(image_path)
-        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        img = Image.open(image_path)
 
         if self.train_dataset.config.transforms_reference is not None:
-            img = self.train_dataset.config.transforms_reference(image=img)["image"]
+            img = self.train_dataset.config.transforms_reference(img)
+        else:
+            if not isinstance(img, torch.Tensor):
+                img = torch.from_numpy(img).permute(2, 0, 1).float()
 
-        if not isinstance(img, torch.Tensor):
-            img = torch.from_numpy(img).permute(2, 0, 1).float()
-
-        img = F.interpolate(
-            img.unsqueeze(0),
-            size=self.train_dataset.config.network_input_size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
+            img = F.interpolate(
+                img.unsqueeze(0),
+                size=self.train_dataset.config.network_input_size,
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
         return img

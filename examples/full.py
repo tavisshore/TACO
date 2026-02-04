@@ -95,16 +95,14 @@ def handle_cvgl_measurement(
 
     # Get current frame image
     query_img = data.get_colour_img(idx)
-    # View image
-    query_img.show()
+    query_img = cvgl_model.encoder.eval_transform(query_img)
 
-    query_img_np = np.array(query_img)
     current_yaw = next_pose_gtsam.theta()
 
     # Query the CVGL database for position
     try:
         cvgl_measurement = cvgl_model.query_database_as_measurement(
-            query_image=query_img_np,
+            query_image=query_img,
             timestamp=timestamp,
             top_k=1,
             device=device,
@@ -116,14 +114,11 @@ def handle_cvgl_measurement(
         # Add CVGL position measurement to pose graph
         cvgl_pose = cvgl_measurement.to_gtsam_pose(yaw=current_yaw)
         cvgl_noise = cvgl_measurement.get_gtsam_noise_model()
-        print(f"   CVGL position noise stddev: {cvgl_measurement.position_std:.2f} m")
-        # print("    Check changing top_k to 1")
-
         graph.add_pose_factor(next_pose_id, cvgl_pose, cvgl_noise)
 
         print(
             f"   CVGL match at turn {num_turns}: "
-            f"pos=({cvgl_measurement.coordinates[0]:.7f}, {cvgl_measurement.coordinates[1]:.7f}), "
+            f"pos=({cvgl_measurement.coordinates[0]:.7f}, {cvgl_measurement.coordinates[1]:.7f}), std={cvgl_measurement.position_std:.2f}m "
         )
 
     except RuntimeError as e:
@@ -169,31 +164,18 @@ def main() -> None:
     print("   Building reference database from graph nodes...")
     reference_coords = []
     reference_images = []
+    reference_node_keys = []
 
     # Use all graph nodes as reference database
     all_nodes = list(data.graph.nodes())
     for node_id in tqdm(all_nodes, desc="   Processing reference nodes"):
         node_data = data.graph.nodes[node_id]
         lat, lon = node_data["y"], node_data["x"]
-
-        # Get satellite image path from node data
         sat_image_path = node_data.get("sat_image")
-
-        if sat_image_path is None:
-            print(f"   Warning: Node {node_id} has no satellite image, skipping")
-            continue
-
-        # Load satellite image
-        try:
-            sat_img = Image.open(sat_image_path)
-            sat_img_np = np.array(sat_img)  # Returns (H, W, 3) RGB [0, 255]
-
-            # Store coordinates and image
-            reference_coords.append([lat, lon])
-            reference_images.append(sat_img_np)
-        except Exception as e:
-            print(f"   Warning: Failed to load satellite image for node {node_id}: {e}")
-            continue
+        sat_img = Image.open(sat_image_path)
+        reference_coords.append([lat, lon])
+        reference_images.append(sat_img)
+        reference_node_keys.append(node_id)
 
     reference_coords_array = np.array(reference_coords)
     cvgl_model.build_reference_database(
@@ -202,6 +184,7 @@ def main() -> None:
         use_utm=True,  # IMPORTANT: Use UTM for consistent global frame
         device=device,
         batch_size=32,
+        node_keys=reference_node_keys,
     )
     print(f"   Reference database built with {len(reference_images)} images")
     print(f"   UTM Zone: {cvgl_model.utm_zone}{cvgl_model.utm_letter}")
@@ -247,7 +230,7 @@ def main() -> None:
     current_pose = initial_pose_gtsam
     current_pose_id = pose_id_0
     num_turns = 0
-
+    downloaded_sats = []
     # Use length of gt_pos_meters to avoid index out of bounds
     num_frames = len(data.gt_pos_meters)
     for idx in tqdm(range(1, num_frames), desc=f"Sequence {args.sequence}"):
@@ -337,12 +320,49 @@ def main() -> None:
                 num_turns=num_turns,
             )
 
+            street_idx = turns.start_indices[-1]
+
+            # Temporary for CVGL validation:
+            # Save street - satellite image pair
+            frame_offset = 5
+            street_img = data.get_colour_img(street_idx - frame_offset)
+
+            gt_node_key = data.get_nodes(idx)
+            sat_img = data.graph.nodes[gt_node_key].get("sat_image")
+            # Rotate this sat_image by the vehicle yaw
+            current_yaw = np.degrees(data.get_gt_yaw(street_idx - frame_offset))
+            sat_img_pil = Image.open(sat_img)
+            sat_img_pil.save(f"cvgl_val/sat/{num_turns - 1}.jpg")
+            sat_img_pil = sat_img_pil.rotate(current_yaw)
+            # save both individually with index num_turns
+            street_img.save(f"cvgl_val/street/{num_turns - 1}.jpg")
+            sat_img_pil.save(f"cvgl_val/sat_rot/{num_turns - 1}.jpg")
+            downloaded_sats.append(gt_node_key)
+            # sat_img = data.get_satellite_img(candidate_nodes[0], frame_offset)
+
         # Update current pose for next iteration
         current_pose = next_pose_gtsam
         current_pose_id = next_pose_id
 
         # Increment frame counter
         data.frame_id += 1
+
+    # Save any images to cvgl_val that aren't in downloaded_sats
+    for node_id in data.graph.nodes():
+        if node_id in downloaded_sats:
+            continue
+        node_data = data.graph.nodes[node_id]
+        sat_image_path = node_data.get("sat_image")
+
+        if sat_image_path is None:
+            print(f"   Warning: Node {node_id} has no satellite image, skipping")
+            continue
+
+        sat_img = Image.open(sat_image_path)
+        sat_img.save(f"cvgl_val/sat/{num_turns}.jpg")
+        sat_img.save(f"cvgl_val/sat_rot/{num_turns}.jpg")
+
+        num_turns += 1
 
     # Optimise graph
     print("\n4. Optimising pose graph...")

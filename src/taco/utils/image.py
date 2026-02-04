@@ -1,13 +1,14 @@
 import cv2
 import numpy as np
+from PIL import Image
 
 
 def panorama_horizontal_crop(
-    equirect_img: np.ndarray,
+    equirect_img: Image.Image,
     heading_deg: float = 0.0,
     fov_deg: float = 90.0,
     output_shape: tuple = (224, 224),
-) -> np.ndarray:
+) -> Image.Image:
     """
     Extract a horizontal slice from an equirectangular panoramic image.
 
@@ -15,15 +16,15 @@ def panorama_horizontal_crop(
     perspective transformation. The crop width is determined by the FOV.
 
     Args:
-        equirect_img: Input equirectangular image (H, W, C)
+        equirect_img: Input equirectangular PIL Image
         heading_deg: Horizontal center direction in degrees (0° = start of image)
         fov_deg: Horizontal field of view in degrees (determines crop width)
         output_shape: Output image size (height, width)
 
     Returns:
-        Cropped and resized image of shape (output_shape[0], output_shape[1], C)
+        Cropped and resized PIL Image
     """
-    h_equirect, w_equirect = equirect_img.shape[:2]
+    w_equirect, h_equirect = equirect_img.size
     h_out, w_out = output_shape
 
     # Calculate crop width based on FOV
@@ -38,54 +39,54 @@ def panorama_horizontal_crop(
 
     # Handle wrapping for panoramic images
     if start_x < 0 or end_x > w_equirect:
-        # Need to wrap around
         # Normalize start_x to be within [0, w_equirect)
         start_x = start_x % w_equirect
         end_x = start_x + crop_width
 
         if end_x <= w_equirect:
             # Fits after wrapping
-            crop = equirect_img[:, start_x:end_x]
+            crop = equirect_img.crop((start_x, 0, end_x, h_equirect))
         else:
             # Spans across the wrap boundary
-            right_part = equirect_img[:, start_x:]
-            left_part = equirect_img[:, : end_x - w_equirect]
-            crop = np.concatenate([right_part, left_part], axis=1)
+            right_part = equirect_img.crop((start_x, 0, w_equirect, h_equirect))
+            left_part = equirect_img.crop((0, 0, end_x - w_equirect, h_equirect))
+            crop = Image.new(equirect_img.mode, (crop_width, h_equirect))
+            crop.paste(right_part, (0, 0))
+            crop.paste(left_part, (right_part.size[0], 0))
     else:
         # Simple crop without wrapping
-        crop = equirect_img[:, start_x:end_x]
+        crop = equirect_img.crop((start_x, 0, end_x, h_equirect))
 
-    # Resize to output shape
-    output_img = cv2.resize(crop, (w_out, h_out), interpolation=cv2.INTER_LINEAR)
-
-    return output_img
+    # Resize to output shape — PIL resize takes (width, height)
+    return crop.resize((w_out, h_out), Image.BILINEAR)
 
 
 def gnomonic_projection(
-    equirect_img: np.ndarray,
+    equirect_img: Image.Image,
     heading_deg: float = 0.0,
     pitch_deg: float = 0.0,
     fov_deg: float = 90.0,
     output_shape: tuple = (224, 224),
-) -> np.ndarray:
+) -> Image.Image:
     """
     Extract a perspective crop from an equirectangular panoramic image using gnomonic projection.
 
     This simulates a pinhole camera extracting a limited-FOV perspective view from a 360° panorama.
 
     Args:
-        equirect_img: Input equirectangular image (H, W, C) where:
-                     - W spans 360° horizontally (longitude: -180° to +180°)
-                     - H spans 180° vertically (latitude: -90° to +90°)
+        equirect_img: Input equirectangular PIL Image where:
+                     - width spans 360° horizontally (longitude: -180° to +180°)
+                     - height spans 180° vertically (latitude: -90° to +90°)
         heading_deg: Horizontal viewing direction in degrees (0° = forward, 90° = right, etc.)
         pitch_deg: Vertical viewing angle in degrees (0° = horizon, +90° = up, -90° = down)
         fov_deg: Field of view in degrees (e.g., 90° for typical camera)
         output_shape: Output image size (height, width)
 
     Returns:
-        Perspective-projected image of shape (output_shape[0], output_shape[1], C)
+        Perspective-projected PIL Image
     """
-    h_equirect, w_equirect = equirect_img.shape[:2]
+    equirect_arr = np.array(equirect_img)
+    h_equirect, w_equirect = equirect_arr.shape[:2]
     h_out, w_out = output_shape
 
     # Convert angles to radians
@@ -159,11 +160,11 @@ def gnomonic_projection(
 
     # Use OpenCV remap for efficient bilinear interpolation
     perspective_img = cv2.remap(
-        equirect_img,
+        equirect_arr,
         u,
         v,
         interpolation=cv2.INTER_LINEAR,
         borderMode=cv2.BORDER_WRAP,  # Wrap horizontally for 360° continuity
     )
 
-    return perspective_img
+    return Image.fromarray(perspective_img)

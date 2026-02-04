@@ -148,3 +148,5 @@ output/
 lightning_logs/
 
 tasks/baseline.yml
+*.jpg
+*.png

@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import lightning as L
+import timm
 import torch
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from lightning.pytorch.loggers import WandbLogger
@@ -14,6 +15,8 @@ from taco.sensors.cvgl import (
     CVUSADatasetConfig,
     ImageRetrievalModel,
     ImageRetrievalModelConfig,
+    KITTIValDataset,
+    KITTIValDatasetConfig,
 )
 from taco.sensors.cvgl.data import CVGLDataModule, DatasetShuffleCallback
 from taco.utils.config import parse_args
@@ -28,16 +31,6 @@ def main():
     file_path = Path(args.data_folder)
 
     # Configuration
-    train_config = CVUSADatasetConfig(
-        data_folder=file_path,
-        mode="triplet",
-        stage="train",
-    )
-    val_config = CVUSADatasetConfig(
-        data_folder=file_path,
-        mode="triplet",
-        stage="val",
-    )
 
     model_config = ImageRetrievalModelConfig(
         embedding_dim=args.embedding_dim,
@@ -46,21 +39,6 @@ def main():
         scheduler_type=args.scheduler_type,
         scheduler_t_max=args.scheduler_t_max,
         scheduler_eta_min=args.scheduler_eta_min,
-    )
-
-    # Create datasets
-    print("Loading datasets...")
-    train_dataset = CVUSADataset(train_config)
-    val_dataset = CVUSADataset(val_config)
-    print(f"Train dataset: {len(train_dataset)} triplets")
-    print(f"Val dataset: {len(val_dataset)} triplets")
-
-    # Create data module for auto batch size support
-    datamodule = CVGLDataModule(
-        train_dataset=train_dataset,
-        val_dataset=val_dataset,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
     )
 
     # Create model
@@ -81,31 +59,79 @@ def main():
         raise ValueError(f"Unknown model name: {args.model_name}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
+    # With augmentations from timm model
+    train_config = CVUSADatasetConfig(
+        data_folder=file_path,
+        mode="triplet",
+        stage="train",
+        transforms_query=model.encoder.train_transform,
+        transforms_reference=model.encoder.train_transform,
+    )
+    # val_config = CVUSADatasetConfig(
+    #     data_folder=file_path,
+    #     mode="triplet",
+    #     stage="val",
+    # )
+    val_config = KITTIValDatasetConfig(
+        data_folder=Path("/scratch/datasets/kitti_val/"),
+        transforms_query=model.encoder.eval_transform,
+        transforms_reference=model.encoder.eval_transform,
+    )
+    # Create datasets
+    print("\nLoading datasets...")
+    train_dataset = CVUSADataset(train_config)
+    # val_dataset = CVUSADataset(val_config)
+    val_dataset = KITTIValDataset(val_config)
+    print(f"Train dataset: {len(train_dataset)} triplets")
+    print(f"Val dataset: {len(val_dataset)} pairs\n")
+
+    # Create data module for auto batch size support
+    datamodule = CVGLDataModule(
+        train_dataset=train_dataset,
+        val_dataset=val_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        shuffle=not args.sim_shuffle,
+    )
+
     # Create callbacks
     output_dir = Path(args.output_dir)
-    checkpoint_callback = ModelCheckpoint(
-        dirpath=output_dir / "checkpoints",
-        filename="retrieval-{epoch:02d}-{val/loss:.4f}",
-        monitor="val/loss",
-        mode="min",
-        save_top_k=3,
-        save_last=True,
-    )
 
-    early_stop = EarlyStopping(
-        monitor="val/loss",
-        patience=args.early_stop_patience,
-        mode="min",
-    )
+    # overfit_batches skips validation entirely, so val@1 is never logged.
+    # Only attach val-monitoring callbacks when not in debug mode.
+    if args.debug:
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=output_dir / "checkpoints",
+            filename="retrieval-{epoch:02d}",
+            save_last=True,
+        )
+        callbacks = [checkpoint_callback]
+    else:
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=output_dir / "checkpoints",
+            filename="retrieval-{epoch:02d}-{val@1:.4f}",
+            monitor="val@1",
+            mode="min",
+            save_top_k=3,
+            save_last=True,
+        )
+        early_stop = EarlyStopping(
+            monitor="val@1",
+            patience=args.early_stop_patience,
+            mode="min",
+        )
+        callbacks = [checkpoint_callback, early_stop]
 
-    # Custom shuffle callback for similarity-based batching
-    shuffle_callback = DatasetShuffleCallback(
-        train_dataset=train_dataset,
-        update_frequency=args.shuffle_update_freq,
-        neighbour_select=args.neighbour_select,
-        neighbour_range=args.neighbour_range,
-        cache_dir=output_dir / "embeddings_cache",
-    )
+    if args.sim_shuffle:
+        callbacks.append(
+            DatasetShuffleCallback(
+                train_dataset=train_dataset,
+                update_frequency=args.shuffle_update_freq,
+                neighbour_select=args.neighbour_select,
+                neighbour_range=args.neighbour_range,
+                cache_dir=output_dir / "embeddings_cache",
+            )
+        )
 
     # Initialize Weights & Biases logger
     wandb_logger = WandbLogger(
@@ -154,7 +180,7 @@ def main():
         accelerator="auto",
         devices=devices,
         strategy=DDPStrategy(find_unused_parameters=True),
-        callbacks=[checkpoint_callback, early_stop, shuffle_callback],
+        callbacks=callbacks,
         logger=wandb_logger,
         # val_check_interval=1000,  # Validate every 1000 training steps
         overfit_batches=10 if args.debug else 0,  # Enable overfit for debugging

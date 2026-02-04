@@ -93,25 +93,8 @@ def plot_trajectory(
     turns: TurnDetection | None = None,
     turn_arrow_scale: float = 0.05,
 ) -> plt.Figure:
-    """Plot a 2D trajectory with optional turn detection markers.
-
-    Args:
-        positions: Nx2 array of positions (x, y) or (lon, lat).
-        title: Plot title.
-        show: Whether to display the plot.
-        convert_latlon: If True, auto-detect and convert lat/lon to meters.
-        turns: Optional TurnDetection result to overlay turn markers.
-            Each detected turn apex will be marked with an arrow indicating
-            the turn direction and magnitude.
-        turn_arrow_scale: Scale factor for turn arrows relative to trajectory size.
-            Default 0.05 (5% of trajectory extent).
-
-    Returns:
-        Matplotlib figure.
-    """
     fig, ax = plt.subplots(figsize=(10, 8))
 
-    # Check if we need to convert lat/lon to meters
     plot_positions = positions
     xlabel = "X (m)"
     ylabel = "Y (m)"
@@ -145,13 +128,7 @@ def plot_trajectory(
             if apex_idx >= len(plot_positions):
                 continue
 
-            # Get position at apex (the actual corner point)
             apex_pos = plot_positions[apex_idx]
-
-            # Convert compass bearing (N=0, clockwise) to math angle (E=0, counter-clockwise)
-            # Compass: 0°=N, 90°=E, 180°=S, 270°=W
-            # Math: 0°=E, 90°=N, 180°=W, 270°=S
-            # Conversion: math_angle = 90° - compass_angle
             entry_compass = turns.entry_angles[i]
             entry_math = np.pi / 2 - entry_compass
             arrow_dx_entry = base_arrow_length * np.cos(entry_math)

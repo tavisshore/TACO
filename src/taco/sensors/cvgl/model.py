@@ -82,6 +82,7 @@ class ImageRetrievalModel(L.LightningModule):
         self.ntxent_loss = losses.NTXentLoss(temperature=config.temperature)
         self.reference_embeddings: np.ndarray | None = None
         self.reference_coordinates: np.ndarray | None = None  # GPS (lat, lon)
+        self.reference_node_keys: list[int] | None = None  # Graph node keys
         self.reference_origin: tuple[float, float] | None = (
             None  # (lat, lon) origin for local frame
         )
@@ -308,7 +309,7 @@ class ImageRetrievalModel(L.LightningModule):
 
         return model
 
-    def forward(self, img_1: Tensor, img_2: Tensor = None) -> Tensor:
+    def forward(self, img_1: Tensor, img_2: Tensor | None = None) -> Tuple[Tensor, Tensor]:
         # Extract features from encoder
         street_features, reference_features = self.encoder(img_1, img_2)
         # Project to embedding dimension
@@ -318,6 +319,15 @@ class ImageRetrievalModel(L.LightningModule):
         street_embeddings = self.l2_norm(street_embeddings, p=2, dim=1)
         reference_embeddings = self.l2_norm(reference_embeddings, p=2, dim=1)
         return street_embeddings, reference_embeddings
+
+    def forward_kitti(self, img: Tensor, img_type: str):
+        if img_type[0] == "street":
+            features = self.encoder.branch1(img)
+        elif img_type[0] in ["sat", "sat_rot"]:
+            features = self.encoder.branch2(img)
+        embeddings = self.projection_head(features)
+        embeddings = self.l2_norm(embeddings, p=2, dim=1)
+        return embeddings
 
     def compute_triplet_loss(
         self,
@@ -449,6 +459,12 @@ class ImageRetrievalModel(L.LightningModule):
         query_emb = torch.cat(self.train_query_embs, dim=0)
         reference_emb = torch.cat(self.train_reference_embs, dim=0)
 
+        # Gather embeddings across all GPUs for correct recall@K computation
+        query_emb = self.all_gather(query_emb.to(self.device)).view(-1, query_emb.shape[-1])
+        reference_emb = self.all_gather(reference_emb.to(self.device)).view(
+            -1, reference_emb.shape[-1]
+        )
+
         # Compute distances over the full training epoch
         pos_distance = F.pairwise_distance(query_emb, reference_emb, p=2)
         negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
@@ -526,72 +542,44 @@ class ImageRetrievalModel(L.LightningModule):
     def on_validation_epoch_start(self) -> None:
         self.val_query_embs: list[Tensor] = []
         self.val_reference_embs: list[Tensor] = []
+        self.val_reference_embs_north: list[Tensor] = []
 
     def validation_step(
         self,
         batch: Tuple[Tensor, Tensor, Tensor],
         batch_idx: int,
     ) -> Tensor:
-        """Validation step.
+        img, img_type = batch
 
-        Args:
-            batch: Tuple of (query_img, reference_img, labels) from CVUSADataset.
-            batch_idx: Batch index.
+        embedding = self.forward_kitti(
+            img, img_type
+        )  # Get the appropriate embedding based on img_type
 
-        Returns:
-            Loss value.
-        """
-        query_img, reference_img, labels = batch
-
-        # Compute embeddings
-        query_emb, reference_emb = self(
-            query_img, reference_img
-        )  # anchor embeddings (ground view) and positive embeddings (satellite view)
-
-        # Sample negatives: shift reference embeddings to create mismatched pairs
-        negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
-
-        # Compute loss based on loss_type configuration
-        if self.config.loss_type == "ntxent":
-            # Use NT-Xent loss only
-            loss = self.compute_ntxent_loss(query_emb, reference_emb, labels)
-            self.log("val/ntxent_loss", loss, sync_dist=True)
-            self.log("val/loss", loss, prog_bar=True, sync_dist=True)
-
-        elif self.config.loss_type == "triplet":
-            # Use triplet loss only
-            loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
-            self.log("val/triplet_loss", loss, sync_dist=True)
-            self.log("val/loss", loss, prog_bar=True, sync_dist=True)
-
-        else:  # self.config.loss_type == "combined"
-            # Compute triplet loss
-            triplet_loss = self.compute_triplet_loss(query_emb, reference_emb, negative_emb)
-
-            # Compute contrastive loss
-            contrastive_loss = self.compute_contrastive_loss(query_emb, labels)
-
-            # Combined loss
-            loss = triplet_loss + 0.5 * contrastive_loss
-
-            # Log metrics
-            self.log("val/triplet_loss", triplet_loss, sync_dist=True)
-            self.log("val/contrastive_loss", contrastive_loss, sync_dist=True)
-            self.log("val/loss", loss, prog_bar=True, sync_dist=True)
-
-        # Accumulate embeddings on CPU for epoch-end metrics
-        self.val_query_embs.append(query_emb.detach().cpu())
-        self.val_reference_embs.append(reference_emb.detach().cpu())
-
-        return loss
+        if img_type[0] == "street":
+            self.val_query_embs.append(embedding.detach().cpu())
+        elif img_type[0] == "sat":
+            self.val_reference_embs.append(embedding.detach().cpu())
+        elif img_type[0] == "sat_rot":
+            self.val_reference_embs_north.append(embedding.detach().cpu())
 
     def on_validation_epoch_end(self) -> None:
+        if not self.val_query_embs or not self.val_reference_embs:
+            print("Warning: No query or reference embeddings collected during validation epoch.")
+            return
         query_emb = torch.cat(self.val_query_embs, dim=0)
         reference_emb = torch.cat(self.val_reference_embs, dim=0)
 
-        # Compute distances over the full validation set
-        pos_distance = F.pairwise_distance(query_emb, reference_emb, p=2)
-        negative_emb = torch.roll(reference_emb, shifts=1, dims=0)
+        # Gather embeddings across all GPUs for correct recall@K computation
+        query_emb = self.all_gather(query_emb.to(self.device)).view(-1, query_emb.shape[-1])
+        reference_emb = self.all_gather(reference_emb.to(self.device)).view(
+            -1, reference_emb.shape[-1]
+        )
+
+        # Assume query_emb has N samples, reference_emb has M samples where M >= N
+        # Pairs are aligned by index for first N references
+        reference_emb_paired = reference_emb[: len(query_emb)]
+        pos_distance = F.pairwise_distance(query_emb, reference_emb_paired, p=2)
+        negative_emb = torch.roll(reference_emb_paired, shifts=1, dims=0)
         neg_distance = F.pairwise_distance(query_emb, negative_emb, p=2)
         accuracy = (pos_distance < neg_distance).float().mean()
 
@@ -620,6 +608,47 @@ class ImageRetrievalModel(L.LightningModule):
             prog_bar=True,
             sync_dist=True,
         )
+
+        if self.val_reference_embs_north:
+            reference_emb_north = torch.cat(self.val_reference_embs_north, dim=0)
+            reference_emb_north = self.all_gather(reference_emb_north.to(self.device)).view(
+                -1, reference_emb_north.shape[-1]
+            )
+            reference_emb_north_paired = reference_emb_north[: len(query_emb)]
+            pos_distance_north = F.pairwise_distance(query_emb, reference_emb_north_paired, p=2)
+            neg_distance_north = F.pairwise_distance(
+                query_emb, torch.roll(reference_emb_north_paired, shifts=1, dims=0), p=2
+            )
+            accuracy_north = (pos_distance_north < neg_distance_north).float().mean()
+
+            self.log("val/accuracy_north", accuracy_north.to(self.device), sync_dist=True)
+            self.log(
+                "val/pos_distance_north", pos_distance_north.mean().to(self.device), sync_dist=True
+            )
+            self.log(
+                "val/neg_distance_north", neg_distance_north.mean().to(self.device), sync_dist=True
+            )
+            recall_at_k = self.compute_recall_at_k(
+                query_emb, reference_emb_north, k_values=(1, 5, 10)
+            )
+            self.log(
+                "val_north@1",
+                torch.tensor(recall_at_k[1] * 100, device=self.device),
+                prog_bar=True,
+                sync_dist=True,
+            )
+            self.log(
+                "val_north@5",
+                torch.tensor(recall_at_k[5] * 100, device=self.device),
+                prog_bar=True,
+                sync_dist=True,
+            )
+            self.log(
+                "val_north@10",
+                torch.tensor(recall_at_k[10] * 100, device=self.device),
+                prog_bar=True,
+                sync_dist=True,
+            )
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Configure optimizers and learning rate schedulers.
@@ -687,34 +716,12 @@ class ImageRetrievalModel(L.LightningModule):
     @torch.no_grad()  # type: ignore[untyped-decorator]
     def encode_image(
         self,
-        image: np.ndarray,
+        image: Tensor,
         device: torch.device | None = None,
         branch: str = "street",
-    ) -> np.ndarray:
-        """Encode a single image to embedding.
-
-        Args:
-            image: Input image as numpy array (H, W, 3) in RGB, [0, 255].
-            device: Device to run inference on.
-
-        Returns:
-            Image embedding as numpy array (embedding_dim,).
-        """
+    ) -> Tensor:
         if device is None:
             device = next(self.parameters()).device
-
-        # Convert to tensor and normalize
-        if isinstance(image, np.ndarray):
-            image = torch.from_numpy(image).permute(2, 0, 1).float()
-
-        # Scale to [0, 1]
-        if image.max() > 1.0:
-            image = image / 255.0
-
-        # Normalize using ImageNet statistics
-        mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1).to(device)
-        std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1).to(device)
-        image = (image - mean) / std
 
         # Add batch dimension and move to device
         image = image.unsqueeze(0).to(device)
@@ -737,7 +744,7 @@ class ImageRetrievalModel(L.LightningModule):
     @torch.no_grad()  # type: ignore[untyped-decorator]
     def compute_similarity(
         self,
-        embedding1: np.ndarray,
+        embedding1: Tensor,
         embedding2: np.ndarray,
     ) -> float:
         """Compute cosine similarity between two embeddings.
@@ -760,28 +767,12 @@ class ImageRetrievalModel(L.LightningModule):
 
     def retrieve_similar(
         self,
-        query_embedding: np.ndarray,
+        query_embedding: Tensor,
         database_embeddings: np.ndarray,
         top_k: int = 10,
     ) -> Tuple[np.ndarray, np.ndarray]:
-        """Retrieve top-k similar images from database.
-
-        Args:
-            query_embedding: Query image embedding (D,).
-            database_embeddings: Database embeddings (N, D).
-            top_k: Number of top results to return.
-
-        Returns:
-            Tuple of (indices, similarities) for top-k matches.
-        """
-        # Convert to tensors
-        query = torch.from_numpy(query_embedding).unsqueeze(0)
         database = torch.from_numpy(database_embeddings)
-
-        # Compute similarities
-        similarities = F.cosine_similarity(query, database, dim=1)
-
-        # Get top-k
+        similarities = F.cosine_similarity(query_embedding, database, dim=1)
         top_k = min(top_k, len(similarities))
         top_similarities, top_indices = torch.topk(similarities, top_k)
 
@@ -796,29 +787,8 @@ class ImageRetrievalModel(L.LightningModule):
         use_utm: bool = True,
         device: torch.device | None = None,
         batch_size: int = 32,
+        node_keys: list[int] | None = None,
     ) -> None:
-        """Build a reference database from input images and GPS coordinates.
-
-        This method processes a collection of images, computes their embeddings,
-        and stores them along with their corresponding GPS coordinates for later
-        querying. CVGL provides position-only measurements; heading comes from IMU.
-
-        Args:
-            images: Reference images as either:
-                - numpy array of shape (N, H, W, 3) in RGB, [0, 255], or
-                - list of N numpy arrays each of shape (H, W, 3) in RGB, [0, 255]
-            coordinates: GPS coordinates of shape (N, 2) where each row is [latitude, longitude].
-            origin: Optional reference origin (latitude, longitude) for local coordinate conversion.
-                If None, uses the first coordinate as origin. Only used if use_utm=False.
-            use_utm: If True, use UTM coordinates for consistent global frame (recommended).
-                If False, use local tangent plane approximation (only for small areas <10km).
-            device: Device to run inference on. If None, uses model's current device.
-            batch_size: Batch size for processing images.
-
-        Raises:
-            ValueError: If the number of images and coordinates don't match.
-            ImportError: If use_utm=True but utm package is not installed.
-        """
         if device is None:
             device = next(self.parameters()).device
 
@@ -828,35 +798,20 @@ class ImageRetrievalModel(L.LightningModule):
         else:
             num_images = len(images)
 
-        # Validate inputs
-        if len(coordinates) != num_images:
-            raise ValueError(
-                f"Number of images ({num_images}) must match number of coordinates ({len(coordinates)})"
-            )
-
         # Store coordinates (headings not needed - CVGL is position-only)
         self.reference_coordinates = np.array(coordinates, dtype=np.float32)
-
-        # Set coordinate system
+        self.reference_node_keys = list(node_keys) if node_keys is not None else None
         self.use_utm = use_utm
 
         if use_utm:
-            # Convert first coordinate to determine UTM zone
-            if not UTM_AVAILABLE:
-                raise ImportError(
-                    "utm package is required for UTM conversion. Install it with: pip install utm"
-                )
             _, _, zone_number, zone_letter = utm.from_latlon(coordinates[0, 0], coordinates[0, 1])
             self.utm_zone = zone_number
             self.utm_letter = zone_letter
-            # Origin not used for UTM (uses UTM zone origin)
             self.reference_origin = None
         else:
-            # Store or compute origin for local coordinate frame
             if origin is not None:
                 self.reference_origin = origin
             else:
-                # Use first coordinate as origin
                 self.reference_origin = (float(coordinates[0, 0]), float(coordinates[0, 1]))
             self.utm_zone = None
             self.utm_letter = None
@@ -864,7 +819,6 @@ class ImageRetrievalModel(L.LightningModule):
         # Process images in batches to compute embeddings
         embeddings_list = []
         self.eval()
-
         for i in range(0, num_images, batch_size):
             batch_end = min(i + batch_size, num_images)
 
@@ -878,14 +832,7 @@ class ImageRetrievalModel(L.LightningModule):
             batch_tensors = []
             for img in batch_images:
                 # Convert to tensor and normalize
-                img_tensor = torch.from_numpy(img).permute(2, 0, 1).float()
-                img_tensor = img_tensor / 255.0
-
-                # Normalize using ImageNet statistics
-                mean = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
-                std = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-                img_tensor = (img_tensor - mean) / std
-
+                img_tensor = self.encoder.eval_transform(img)
                 batch_tensors.append(img_tensor)
 
             # Stack into batch and move to device
@@ -901,28 +848,10 @@ class ImageRetrievalModel(L.LightningModule):
     @torch.no_grad()  # type: ignore[untyped-decorator]
     def query_database(
         self,
-        query_image: np.ndarray,
+        query_image: Tensor,
         top_k: int = 5,
         device: torch.device | None = None,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """Query the reference database with an image.
-
-        Embeds the query image, searches the reference database, and returns
-        the GPS coordinates of the top-K most similar reference images.
-
-        Args:
-            query_image: Query image as numpy array (H, W, 3) in RGB, [0, 255].
-            top_k: Number of top results to return.
-            device: Device to run inference on. If None, uses model's current device.
-
-        Returns:
-            Tuple of (coordinates, similarities) where:
-                - coordinates: GPS coordinates of top-K matches, shape (K, 2) [latitude, longitude]
-                - similarities: Cosine similarities for top-K matches, shape (K,)
-
-        Raises:
-            RuntimeError: If the reference database has not been built yet.
-        """
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         if self.reference_embeddings is None or self.reference_coordinates is None:
             raise RuntimeError(
                 "Reference database has not been built. Call build_reference_database() first."
@@ -940,26 +869,17 @@ class ImageRetrievalModel(L.LightningModule):
 
         # Get corresponding coordinates
         top_coordinates = self.reference_coordinates[top_indices]
+        # If single values - reshape to (1, 2) for consistency (lists)
+        # if top_coordinates.ndim == 1:
+        #     top_coordinates = top_coordinates.reshape(1, -1)
 
-        return top_coordinates, top_similarities
+        return top_coordinates, top_similarities, top_indices
 
     @staticmethod
     def gps_to_utm(
         lat: float,
         lon: float,
     ) -> tuple[float, float, int, str]:
-        """Convert GPS coordinates to UTM coordinates.
-
-        Args:
-            lat: Latitude in degrees.
-            lon: Longitude in degrees.
-
-        Returns:
-            Tuple of (easting, northing, zone_number, zone_letter) in meters.
-
-        Raises:
-            ImportError: If utm package is not installed.
-        """
         if not UTM_AVAILABLE:
             raise ImportError(
                 "utm package is required for UTM conversion. Install it with: pip install utm"
@@ -974,20 +894,6 @@ class ImageRetrievalModel(L.LightningModule):
         zone_number: int,
         zone_letter: str,
     ) -> tuple[float, float]:
-        """Convert UTM coordinates to GPS coordinates.
-
-        Args:
-            easting: UTM easting in meters.
-            northing: UTM northing in meters.
-            zone_number: UTM zone number.
-            zone_letter: UTM zone letter.
-
-        Returns:
-            Tuple of (latitude, longitude) in degrees.
-
-        Raises:
-            ImportError: If utm package is not installed.
-        """
         if not UTM_AVAILABLE:
             raise ImportError(
                 "utm package is required for UTM conversion. Install it with: pip install utm"
@@ -1002,23 +908,6 @@ class ImageRetrievalModel(L.LightningModule):
         origin_lat: float,
         origin_lon: float,
     ) -> tuple[float, float]:
-        """Convert GPS coordinates to local XY coordinates.
-
-        Uses a local tangent plane approximation (ENU frame) centered at the origin.
-        This is accurate for distances up to ~10km from the origin.
-
-        Args:
-            lat: Latitude in degrees.
-            lon: Longitude in degrees.
-            origin_lat: Origin latitude in degrees.
-            origin_lon: Origin longitude in degrees.
-
-        Returns:
-            Tuple of (x, y) in meters, where:
-                - x is positive East
-                - y is positive North
-        """
-        # Earth radius in meters
         R = 6371000.0
 
         # Convert to radians
@@ -1044,20 +933,6 @@ class ImageRetrievalModel(L.LightningModule):
         origin_lat: float,
         origin_lon: float,
     ) -> tuple[float, float]:
-        """Convert local XY coordinates to GPS coordinates.
-
-        Uses a local tangent plane approximation (ENU frame).
-
-        Args:
-            x: X coordinate in meters (East).
-            y: Y coordinate in meters (North).
-            origin_lat: Origin latitude in degrees.
-            origin_lon: Origin longitude in degrees.
-
-        Returns:
-            Tuple of (latitude, longitude) in degrees.
-        """
-        # Earth radius in meters
         R = 6371000.0
 
         # Convert to radians
@@ -1119,7 +994,7 @@ class ImageRetrievalModel(L.LightningModule):
     @torch.no_grad()  # type: ignore[untyped-decorator]
     def query_database_as_measurement(
         self,
-        query_image: np.ndarray,
+        query_image: Tensor,
         timestamp: float,
         top_k: int = 5,
         device: torch.device | None = None,
@@ -1127,39 +1002,12 @@ class ImageRetrievalModel(L.LightningModule):
         base_position_std: float = 5.0,
         current_yaw: float | None = None,
     ) -> CVGLMeasurement:
-        """Query database and return result as CVGLMeasurement for pose graph.
-
-        This method combines query_database with coordinate conversion and
-        covariance estimation to produce a POSITION-ONLY measurement ready
-        for insertion into the GTSAM pose graph.
-
-        Note: CVGL only provides position (x, y) measurements. Heading should
-        come from IMU integration, not from visual localization.
-
-        Args:
-            query_image: Query image as numpy array (H, W, 3) in RGB, [0, 255].
-            timestamp: Timestamp of the measurement.
-            top_k: Number of top results to consider for position estimation.
-            device: Device to run inference on. If None, uses model's current device.
-            use_weighted_average: If True, compute position as weighted average of top-K matches.
-                If False, use only the top match.
-            base_position_std: Base standard deviation for position uncertainty (meters).
-            current_yaw: Optional current heading from IMU (radians). Stored but not used
-                for measurement (position-only measurement).
-
-        Returns:
-            CVGLMeasurement object with position-only measurement.
-
-        Raises:
-            RuntimeError: If the reference database has not been built yet.
-        """
         if self.reference_embeddings is None or self.reference_coordinates is None:
             raise RuntimeError(
                 "Reference database has not been built. Call build_reference_database() first."
             )
 
-        # Query the database
-        top_gps_coords, top_similarities = self.query_database(
+        top_gps_coords, top_similarities, top_indices = self.query_database(
             query_image=query_image,
             top_k=top_k,
             device=device,
@@ -1238,6 +1086,13 @@ class ImageRetrievalModel(L.LightningModule):
         # Add geographic coordinates for debug
         coord = top_gps_coords[0]  # Use top match GPS for reference
 
+        # Look up the graph node key for the top match
+        matched_node_key = (
+            self.reference_node_keys[top_indices[0]]
+            if self.reference_node_keys is not None
+            else None
+        )
+
         # Create CVGLMeasurement (position-only)
         measurement = CVGLMeasurement(
             timestamp=timestamp,
@@ -1248,6 +1103,7 @@ class ImageRetrievalModel(L.LightningModule):
             num_inliers=top_k,  # Use top_k as a proxy for inliers
             yaw=current_yaw,  # Store current yaw from IMU (not estimated)
             image_id=None,
+            node_key=matched_node_key,
         )
 
         return measurement

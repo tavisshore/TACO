@@ -5,6 +5,9 @@ def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="Train image retrieval model")
 
+    # Seed
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+
     # Dataset configuration
     parser.add_argument(
         "--data-folder",
@@ -12,12 +15,24 @@ def parse_args():
         default="/scratch/datasets/CVUSA",
         help="Path to dataset folder",
     )
+    # KITTI sequence
+    parser.add_argument(
+        "--sequence",
+        type=int,
+        default=0,
+        help="KITTI odometry sequence to use (e.g., 0, 1, ...)",
+    )
+
+    # Verbose
+    parser.add_argument(
+        "--verbose", action="store_true", help="Enable verbose logging during training"
+    )
 
     # Training configuration
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=16,
+        default=28,
         help="Initial batch size for training (ignored if --auto-batch-size is set)",
     )
     parser.add_argument(
@@ -103,6 +118,11 @@ def parse_args():
     )
     parser.add_argument(
         "--neighbour-range", type=int, default=128, help="Range of top neighbors to sample from"
+    )
+    parser.add_argument(
+        "--sim-shuffle",
+        action="store_true",
+        help="Enable similarity-based batch shuffling",
     )
 
     # Logging and checkpointing

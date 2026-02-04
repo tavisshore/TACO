@@ -2,6 +2,7 @@ import pytorch_lightning as pl
 import timm
 import torch
 import torch.nn as nn
+from timm.data import create_transform, resolve_data_config
 
 
 class ConvNeXtEncoder(pl.LightningModule):
@@ -31,6 +32,10 @@ class ConvNeXtEncoder(pl.LightningModule):
         else:
             self.branch1 = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
             self.branch2 = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
+
+        config = resolve_data_config({}, model=self.branch1)
+        self.train_transform = create_transform(**config, is_training=True)
+        self.eval_transform = create_transform(**config, is_training=False)
 
         # PyTorch's autograd produces weight grads for depthwise convs with
         # stride (C, 1, kH, 1) — the size-1 dim gets stride 1 instead of
