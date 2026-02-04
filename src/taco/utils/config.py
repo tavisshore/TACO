@@ -17,7 +17,7 @@ def parse_args():
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=8,
+        default=16,
         help="Initial batch size for training (ignored if --auto-batch-size is set)",
     )
     parser.add_argument(
@@ -25,8 +25,8 @@ def parse_args():
         action="store_true",
         help="Automatically find maximum batch size that fits in GPU memory",
     )
-    parser.add_argument("--max-epochs", type=int, default=40, help="Maximum number of epochs")
-    parser.add_argument("--num-workers", type=int, default=0, help="Number of data loader workers")
+    parser.add_argument("--max-epochs", type=int, default=100, help="Maximum number of epochs")
+    parser.add_argument("--num-workers", type=int, default=4, help="Number of data loader workers")
 
     # Multi-GPU configuration
     parser.add_argument(
@@ -79,7 +79,7 @@ def parse_args():
     parser.add_argument(
         "--model-variant",
         type=str,
-        default="timm/convnextv2_tiny.fcmae_ft_in22k_in1k_384",
+        default="timm/convnext_tiny.fb_in22k_ft_in1k_384",
         help="Model variant",
     )
     parser.add_argument("--img-size", type=int, default=384, help="Input image size")
@@ -114,6 +114,9 @@ def parse_args():
         type=str,
         default="/scratch/datasets/CVUSA/output",
         help="Output directory for checkpoints and logs",
+    )
+    parser.add_argument(
+        "--debug", action="store_true", help="Enable debug mode with verbose logging"
     )
 
     return parser.parse_args()

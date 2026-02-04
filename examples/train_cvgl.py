@@ -18,6 +18,8 @@ from taco.sensors.cvgl import (
 from taco.sensors.cvgl.data import CVGLDataModule, DatasetShuffleCallback
 from taco.utils.config import parse_args
 
+torch.set_float32_matmul_precision("high")
+
 
 def main():
     """Train a simple image retrieval model."""
@@ -155,6 +157,7 @@ def main():
         callbacks=[checkpoint_callback, early_stop, shuffle_callback],
         logger=wandb_logger,
         # val_check_interval=1000,  # Validate every 1000 training steps
+        overfit_batches=10 if args.debug else 0,  # Enable overfit for debugging
     )
 
     # Auto batch size tuning if requested

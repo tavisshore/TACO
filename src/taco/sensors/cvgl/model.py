@@ -54,63 +54,32 @@ class ImageRetrievalModelConfig:
 
 
 class ImageRetrievalModel(L.LightningModule):
-    """PyTorch Lightning model for image retrieval with flexible encoder backbone.
-
-    Accepts any encoder module to encode images into low-dimensional descriptors
-    for visual place recognition. This allows using various pre-trained models
-    from academic papers (e.g., ConvNeXt, ResNet, ViT, NetVLAD, etc.).
-
-    Args:
-        encoder: PyTorch module that takes images (B, C, H, W) and returns features.
-            The encoder should output features of shape (B, D) or (B, D, H', W')
-            which will be automatically flattened and processed by the projection head.
-        config: ImageRetrievalModelConfig object containing all configuration parameters
-        backbone_dim: Optional explicit feature dimension of the encoder output.
-            If None, will be inferred by running a dummy forward pass with a (1, 3, 224, 224) input.
-    """
-
     def __init__(
         self,
         encoder: pl.LightningModule,
         config: ImageRetrievalModelConfig,
         backbone_dim: int | None = None,
     ) -> None:
-        """Initialize the image retrieval model.
-
-        Args:
-            encoder: PyTorch module that encodes images to features
-            config: ImageRetrievalModelConfig object containing all configuration parameters
-            backbone_dim: Optional explicit feature dimension. If None, inferred automatically.
-        """
         super().__init__()
         self.config = config
         self.save_hyperparameters(ignore=["encoder"])
-
-        # Store the encoder
         self.encoder = encoder
 
-        # Infer backbone dimension if not provided
         if backbone_dim is None:
             backbone_dim = self._infer_backbone_dim()
 
-        # Projection head to map to embedding dimension
         self.projection_head = nn.Sequential(
             nn.Flatten(),  # Flatten (B, D, H, W) -> (B, D) or keep (B, D)
             nn.LayerNorm(backbone_dim),
             nn.Linear(backbone_dim, 1024),
-            nn.BatchNorm1d(1024),
+            nn.LayerNorm(1024),
             nn.ReLU(inplace=True),
             nn.Dropout(0.1),
             nn.Linear(1024, config.embedding_dim),
         )
 
-        # L2 normalization layer
         self.l2_norm = nn.functional.normalize
-
-        # Initialize NT-Xent loss from pytorch_metric_learning
         self.ntxent_loss = losses.NTXentLoss(temperature=config.temperature)
-
-        # Reference database storage
         self.reference_embeddings: np.ndarray | None = None
         self.reference_coordinates: np.ndarray | None = None  # GPS (lat, lon)
         self.reference_origin: tuple[float, float] | None = (
@@ -120,32 +89,18 @@ class ImageRetrievalModel(L.LightningModule):
         self.utm_zone: int | None = None  # UTM zone number
         self.utm_letter: str | None = None
 
-        # Set example input for Lightning's ModelSummary (enables FLOP calculation)
-        # self.example_input_array = torch.randn(1, 3, 384, 384)  # UTM zone letter
-        # Example input for model summary
         self.example_input_array = (
             torch.randn(1, 3, 384, 384),
             torch.randn(1, 3, 384, 384),
         )
 
     def _infer_backbone_dim(self) -> int:
-        """Infer the backbone output dimension by running a dummy forward pass.
-
-        Returns:
-            Feature dimension of the encoder output after flattening.
-        """
-        # Save original training state
         was_training = self.encoder.training
-
-        # Create a dummy input (1, 3, 384, 384)
         dummy_input = torch.randn(1, 3, 384, 384)
-
-        # Run encoder in eval mode
         self.encoder.eval()
         with torch.no_grad():
             street_features = self.encoder.branch1(dummy_input)
 
-        # Restore original training state
         if was_training:
             self.encoder.train()
 
@@ -186,7 +141,7 @@ class ImageRetrievalModel(L.LightningModule):
     def from_convnext(
         cls,
         config: ImageRetrievalModelConfig,
-        model_name: str = "facebook/convnextv2-tiny-22k-384",
+        model_name: str = "convnext_base.fb_in22k_ft_in1k_384",
         pretrained: bool = True,
         img_size: int = 384,
         freeze: bool = False,
@@ -204,17 +159,6 @@ class ImageRetrievalModel(L.LightningModule):
 
     @staticmethod
     def _infer_encoder_from_checkpoint(state_dict: dict) -> tuple[str, bool]:
-        """Infer encoder architecture from checkpoint state dict keys.
-
-        Args:
-            state_dict: Model state dictionary
-
-        Returns:
-            Tuple of (model_name, is_encoder_only)
-            - model_name: Inferred encoder architecture name
-            - is_encoder_only: True if checkpoint contains only encoder weights (Sample4Geo style)
-        """
-        # Check if this is a full model checkpoint (with encoder. prefix)
         encoder_keys = [k for k in state_dict.keys() if k.startswith("encoder.")]
 
         if encoder_keys:
@@ -255,14 +199,6 @@ class ImageRetrievalModel(L.LightningModule):
 
     @staticmethod
     def _infer_config_from_state_dict(state_dict: dict) -> ImageRetrievalModelConfig:
-        """Infer config from state dict by examining layer shapes.
-
-        Args:
-            state_dict: Model state dictionary
-
-        Returns:
-            ImageRetrievalModelConfig instance with inferred parameters
-        """
         config = ImageRetrievalModelConfig()
 
         # Try to infer embedding_dim from projection head output layer
@@ -281,14 +217,6 @@ class ImageRetrievalModel(L.LightningModule):
 
     @staticmethod
     def _extract_config_from_checkpoint(checkpoint: dict) -> ImageRetrievalModelConfig:
-        """Extract config from checkpoint hyperparameters.
-
-        Args:
-            checkpoint: Loaded checkpoint dictionary
-
-        Returns:
-            ImageRetrievalModelConfig instance
-        """
         if "hyper_parameters" in checkpoint and "config" in checkpoint["hyper_parameters"]:
             return ImageRetrievalModelConfig(**checkpoint["hyper_parameters"]["config"])
         return ImageRetrievalModelConfig()
@@ -297,14 +225,6 @@ class ImageRetrievalModel(L.LightningModule):
     def _report_loading_status(
         missing_keys: list, unexpected_keys: list, checkpoint_path: str, strict: bool
     ) -> None:
-        """Report status of checkpoint loading.
-
-        Args:
-            missing_keys: List of missing keys in state dict
-            unexpected_keys: List of unexpected keys in state dict
-            checkpoint_path: Path to the checkpoint file
-            strict: Whether strict loading was enforced
-        """
         if missing_keys:
             print(f"Warning: Missing keys in checkpoint: {len(missing_keys)} keys")
             for key in missing_keys[:10]:
@@ -330,47 +250,9 @@ class ImageRetrievalModel(L.LightningModule):
         strict: bool = False,
         config: ImageRetrievalModelConfig | None = None,
     ) -> "ImageRetrievalModel":
-        """Load a full ImageRetrievalModel from a checkpoint file.
-
-        This method loads both the encoder and projection head weights from a
-        previously trained ImageRetrievalModel checkpoint. Follows Sample4Geo's
-        loading pattern for compatibility.
-
-        Args:
-            checkpoint_path: Path to the checkpoint file (.ckpt or .pth)
-            model_name: Name of the encoder model. If None, attempts to infer from checkpoint.
-                Must match the architecture used during training.
-            img_size: Input image size (must match the checkpoint)
-            map_location: Device to load the checkpoint onto
-            strict: Whether to strictly enforce that state_dict keys match.
-                Set to False for more flexible loading (default: False)
-            config: Optional config to use. If None, will try to extract from checkpoint
-                or use default config.
-
-        Returns:
-            ImageRetrievalModel instance with loaded weights
-
-        Example:
-            >>> # Auto-detect encoder (recommended)
-            >>> model = ImageRetrievalModel.load_from_checkpoint(
-            ...     checkpoint_path="path/to/model.ckpt",
-            ...     img_size=384
-            ... )
-            >>>
-            >>> # Or specify encoder explicitly
-            >>> model = ImageRetrievalModel.load_from_checkpoint(
-            ...     checkpoint_path="path/to/model.ckpt",
-            ...     model_name="resnet50",
-            ...     img_size=384
-            ... )
-        """
         print(f"Loading from: {checkpoint_path}")
-
-        # Load checkpoint - Sample4Geo style
         model_state_dict = torch.load(checkpoint_path, map_location=map_location)
 
-        # Handle different checkpoint formats
-        # If it's a PyTorch Lightning checkpoint with "state_dict" key, extract it
         if isinstance(model_state_dict, dict) and "state_dict" in model_state_dict:
             checkpoint_dict = model_state_dict
             model_state_dict = checkpoint_dict["state_dict"]
@@ -476,10 +358,8 @@ class ImageRetrievalModel(L.LightningModule):
         Returns:
             Contrastive loss value.
         """
-        # Compute similarity matrix
         similarity = torch.matmul(embeddings, embeddings.T) / self.config.temperature
 
-        # Create positive mask (same place)
         labels = labels.view(-1, 1)
         mask = torch.eq(labels, labels.T).float()
 
@@ -504,20 +384,6 @@ class ImageRetrievalModel(L.LightningModule):
         reference_emb: Tensor,
         labels: Tensor,
     ) -> Tensor:
-        """Compute NT-Xent loss using pytorch_metric_learning.
-
-        NT-Xent (Normalized Temperature-scaled Cross Entropy Loss) is a contrastive
-        loss that treats each pair of query-reference images as positives and all
-        other images in the batch as negatives.
-
-        Args:
-            query_emb: Query image embeddings (B, D).
-            reference_emb: Reference image embeddings (B, D).
-            labels: Place labels (B,).
-
-        Returns:
-            NT-Xent loss value.
-        """
         # Concatenate query and reference embeddings
         # This creates pairs where query[i] and reference[i] have the same label
         embeddings = torch.cat([query_emb, reference_emb], dim=0)
@@ -525,10 +391,7 @@ class ImageRetrievalModel(L.LightningModule):
         # Duplicate labels for both query and reference
         # labels[i] corresponds to query_emb[i] and reference_emb[i]
         labels_combined = torch.cat([labels, labels], dim=0)
-
-        # Compute NT-Xent loss using pytorch_metric_learning
         loss = self.ntxent_loss(embeddings, labels_combined)
-
         return loss
 
     def training_step(
@@ -536,21 +399,9 @@ class ImageRetrievalModel(L.LightningModule):
         batch: Tuple[Tensor, Tensor, Tensor],
         batch_idx: int,
     ) -> Tensor:
-        """Training step.
-
-        Args:
-            batch: Tuple of (query_img, reference_img, labels) from CVUSADataset.
-            batch_idx: Batch index.
-
-        Returns:
-            Loss value.
-        """
         query_img, reference_img, labels = batch
-
-        # Compute embeddings
         query_emb, reference_emb = self.forward(query_img, reference_img)
 
-        # Compute loss based on loss_type configuration
         if self.config.loss_type == "ntxent":
             # Use NT-Xent loss only
             loss = self.compute_ntxent_loss(query_emb, reference_emb, labels)

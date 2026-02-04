@@ -18,17 +18,18 @@ commands:
     git checkout get_graph_working
     pip install -e .
     python examples/train_cvgl.py \
-      --batch-size 32 \
+      --batch-size 8 \
       --embedding-dim 512 \
       --learning-rate 0.0002 \
       --loss-type ntxent \
       --scheduler-type cosine \
-      --max-epochs 40 \
+      --max-epochs 100 \
       --model-name convnext \
       --experiment-name multi-gpu \
       --output-dir output/multi-gpu \
       --devices 4 \
-      --strategy ddp
+      --strategy ddp \
+      --num-workers 0
 
 env:
   - WANDB_PROJECT=taco

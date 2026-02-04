@@ -32,6 +32,18 @@ class ConvNeXtEncoder(pl.LightningModule):
             self.branch1 = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
             self.branch2 = timm.create_model(model_name, pretrained=pretrained, num_classes=0)
 
+        # PyTorch's autograd produces weight grads for depthwise convs with
+        # stride (C, 1, kH, 1) — the size-1 dim gets stride 1 instead of
+        # matching the param's (C, C*kH, kH, 1).  Both are "contiguous" per
+        # PyTorch's rules, but DDP does a strict stride comparison against
+        # its bucket view and warns.  Register a backward hook on every
+        # depthwise conv weight to reshape the grad to match the param stride.
+        for branch in (self.branch1, self.branch2):
+            for module in branch.modules():
+                if isinstance(module, nn.Conv2d) and module.groups == module.in_channels:
+                    module.weight.register_hook(lambda g, p=module.weight: g.reshape(p.shape))
+        ########## TO DORT OUT multi-GPU warning
+
         if freeze:
             for param in self.branch1.parameters():
                 param.requires_grad = False
