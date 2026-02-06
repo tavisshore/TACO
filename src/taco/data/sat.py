@@ -200,36 +200,34 @@ def image_size(lat1: float, lon1: float, lat2: float, lon2: float, zoom: int, ti
 
 def download_satmap(
     coord: Tuple[float, float],
-    cwd: Path | str = CACHE_DIR,
+    cache_dir: Path = Path(CACHE_DIR),
     zoom: int = 20,
-) -> str:
+) -> Path:
     """Download satellite map image for a given coordinate.
 
     Downloads high quality satellite images as north-aligned tiles.
 
     Args:
         coord: (latitude, longitude) tuple.
-        cwd: Working directory where images will be saved in raw/images/ subdirectory.
+        cache_dir: Directory where images will be saved in satellite/ subdirectory.
         zoom: Zoom level (higher = more detail). Default is 20.
 
     Returns:
         Path to the downloaded/cached image file.
     """
-    point = coord
-    cwd = Path(cwd)
 
-    image_name = f"{point[0]}_{point[1]}_{zoom}.jpg"
-    image_path = cwd / "raw" / "images" / image_name
+    image_name = Path(f"{coord[0]}_{coord[1]}_{zoom}.jpg")
+    sat_path = cache_dir / "sat"
+    if not sat_path.exists():
+        sat_path.mkdir(parents=True, exist_ok=True)
+    image_path = sat_path / image_name
 
     # Return cached image if exists
     if image_path.is_file():
-        return str(image_path)
-
-    # Ensure directory exists
-    image_path.parent.mkdir(parents=True, exist_ok=True)
+        return image_name
 
     # Convert to UTM coordinates for metric-based bounding box
-    lat, lon, zn, zl = utm.from_latlon(point[0], point[1])
+    lat, lon, zn, zl = utm.from_latlon(coord[0], coord[1])
 
     # Get satellite images that cover area + 100m each side (50m buffer on all sides)
     lat_min = lat - 50
@@ -272,7 +270,7 @@ def download_satmap(
     img.save(image_path)
     img.close()
 
-    return str(image_path)
+    return image_name
 
 
 def get_tile_coords(lat: float, lon: float, zoom: int) -> Tuple[int, int]:

@@ -12,7 +12,7 @@ import os
 from datetime import datetime
 from math import asin, atan2, cos, degrees, radians, sin
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import List, Tuple
 
 import cv2
 import matplotlib.pyplot as plt
@@ -22,7 +22,6 @@ import osmnx as ox
 import pykitti
 import pypose as pp
 import torch
-from geopy.distance import geodesic
 from haversine import Unit, haversine
 from PIL import Image
 from torch.utils.data import Dataset
@@ -39,7 +38,6 @@ from taco.data.graph_refine import simplify_sharp_turns
 from taco.data.sat import download_satmap
 from taco.sensors.imu import TurnDetection
 from taco.utils.geometry import rotate_trajectory
-from taco.visualization.plotter import _convert_latlon_to_meters
 
 
 def latlon_to_local_meters(
