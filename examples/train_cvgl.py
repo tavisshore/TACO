@@ -111,9 +111,10 @@ def main():
             dirpath=output_dir / "checkpoints",
             filename="retrieval-{epoch:02d}-{val@1:.4f}",
             monitor="val@1",
-            mode="min",
+            mode="max",
             save_top_k=3,
             save_last=True,
+            save_on_train_epoch_end=False,  # Only save after validation
         )
         # early_stop = EarlyStopping(
         #     monitor="val@1",
