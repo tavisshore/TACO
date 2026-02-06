@@ -17,6 +17,9 @@ from taco.sensors.cvgl import (
     ImageRetrievalModelConfig,
     KITTIValDataset,
     KITTIValDatasetConfig,
+    ProgressiveAugmentationCallback,
+    create_default_augmentations,
+    create_synchronized_augmentations,
 )
 from taco.sensors.cvgl.data import CVGLDataModule, DatasetShuffleCallback
 from taco.utils.config import parse_args
@@ -59,13 +62,32 @@ def main():
         raise ValueError(f"Unknown model name: {args.model_name}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
 
-    # With augmentations from timm model
+    # Create augmentation pipelines with progressive strength
+    # Progressive augmentations start weak and gradually increase in strength
+    train_augs = create_default_augmentations(
+        stage="train",
+        strength="progressive",  # Automatically increases strength during training
+    )
+
+    # Create synchronized augmentations for query+reference pairs
+    sync_augs = create_synchronized_augmentations(
+        prob_flip=0.1,
+        prob_rotate=0.5,
+        rotate_limit=15,  # Rotate up to ±15 degrees
+    )
+
+    # With augmentations from timm model + albumentations
     train_config = CVUSADatasetConfig(
         data_folder=file_path,
         mode="triplet",
         stage="train",
         transforms_query=model.encoder.train_transform,
         transforms_reference=model.encoder.train_transform,
+        augmentations_train=train_augs,
+        augmentations_train_sync=sync_augs,
+        use_progressive_augmentation=True,  # Enable progressive augmentations
+        progressive_max_epochs=args.max_epochs,
+        progressive_warmup_epochs=10,  # Warmup for first 10 epochs
     )
     # val_config = CVUSADatasetConfig(
     #     data_folder=file_path,
@@ -122,6 +144,9 @@ def main():
         #     mode="min",
         # )
         callbacks = [checkpoint_callback]  # , early_stop]
+
+    # Add progressive augmentation callback
+    callbacks.append(ProgressiveAugmentationCallback(verbose=True))
 
     if args.sim_shuffle:
         callbacks.append(

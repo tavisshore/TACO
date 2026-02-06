@@ -1,6 +1,13 @@
 """CVGL (Computer Vision Global Localization) module."""
 
-from .cvusa import CVUSADataset, CVUSADatasetConfig
+from .callbacks import ProgressiveAugmentationCallback
+from .cvusa import (
+    CVUSADataset,
+    CVUSADatasetConfig,
+    ProgressiveAugmentation,
+    create_default_augmentations,
+    create_synchronized_augmentations,
+)
 from .kitti import KITTIValDataset, KITTIValDatasetConfig
 from .localizer import CVGLLocalizer
 from .measurement import CVGLMeasurement
@@ -22,4 +29,8 @@ __all__ = [
     "create_convnext_encoder",
     "KITTIValDataset",
     "KITTIValDatasetConfig",
+    "ProgressiveAugmentation",
+    "ProgressiveAugmentationCallback",
+    "create_default_augmentations",
+    "create_synchronized_augmentations",
 ]
