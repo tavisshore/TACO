@@ -115,12 +115,12 @@ def main():
             save_top_k=3,
             save_last=True,
         )
-        early_stop = EarlyStopping(
-            monitor="val@1",
-            patience=args.early_stop_patience,
-            mode="min",
-        )
-        callbacks = [checkpoint_callback, early_stop]
+        # early_stop = EarlyStopping(
+        #     monitor="val@1",
+        #     patience=args.early_stop_patience,
+        #     mode="min",
+        # )
+        callbacks = [checkpoint_callback]  # , early_stop]
 
     if args.sim_shuffle:
         callbacks.append(
