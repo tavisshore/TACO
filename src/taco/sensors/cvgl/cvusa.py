@@ -53,7 +53,7 @@ class CVUSADatasetConfig:
     prob_rotate: float = 0.0
     shuffle_batch_size: int = 128
     use_gnomonic_projection: bool = True
-    gnomonic_fov_deg: float = 120.0
+    gnomonic_fov_deg: float = 90.0
     gnomonic_output_shape: Tuple[int, int] = (384, 384)
     random_heading: bool = False
     random_pitch: bool = False
